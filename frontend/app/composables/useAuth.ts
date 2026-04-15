@@ -1,20 +1,27 @@
 /**
- * Authentication composable — manages user session state via GitHub OAuth.
+ * Authentication composable — manages user session state via GitHub OAuth or email login.
  */
 
 export interface AuthUser {
   id: string;
-  github_id: number;
-  github_login: string;
+  github_id: number | null;
+  github_login: string | null;
   avatar_url: string;
   display_name: string;
   email: string;
+  role: "user" | "viewer";
+  activated: boolean;
+  auth_method: "github" | "email";
+  is_admin: boolean;
 }
 
 export function useAuth() {
   const user = useState<AuthUser | null>("authUser", () => null);
   const isLoading = useState<boolean>("authLoading", () => true);
   const isAuthenticated = computed(() => !!user.value);
+  const isActivated = computed(() => user.value?.activated ?? false);
+  const isAdmin = computed(() => user.value?.is_admin ?? false);
+  const isViewer = computed(() => user.value?.role === "viewer");
 
   const { apiFetch } = useApi();
 
@@ -43,6 +50,9 @@ export function useAuth() {
     user,
     isLoading,
     isAuthenticated,
+    isActivated,
+    isAdmin,
+    isViewer,
     fetchUser,
     logout,
   };

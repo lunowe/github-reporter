@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     github_app_client_secret: str = ""
     github_app_slug: str = ""  # e.g. "github-reporter" — used to build the install URL
 
+    # Admin & access control
+    admin_github_login: str = ""  # GitHub username of the admin user
+    require_access_code: bool = True  # Require access code for new users
+
     # Session / encryption
     session_secret: str = "change-me-in-production"
 

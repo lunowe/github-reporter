@@ -35,3 +35,32 @@ class RepoConnectionOut(BaseModel):
     repo_full_name: str
     display_name: str
     default_branch: str
+
+
+# ── Access Codes ───────────────────────────────────────────────────────
+
+class AccessCodeCreate(BaseModel):
+    label: str = ""
+    max_uses: int = Field(default=1, ge=0, description="0 = unbegrenzt")
+
+
+class AccessCodeRedeem(BaseModel):
+    code: str = Field(..., description="Der Zugangscode")
+
+
+# ── Invites ────────────────────────────────────────────────────────────
+
+class InviteCreate(BaseModel):
+    email: str = Field(..., description="E-Mail des einzuladenden Nutzers")
+    repo_ids: list[str] = Field(default_factory=list, description="Erlaubte Repository-IDs")
+
+
+class InviteRedeem(BaseModel):
+    token: str
+    password: str = Field(..., min_length=8, description="Mindestens 8 Zeichen")
+    display_name: str = ""
+
+
+class EmailLogin(BaseModel):
+    email: str
+    password: str

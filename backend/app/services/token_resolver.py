@@ -2,6 +2,7 @@
 """
 Resolve the GitHub access token for a given user.
 Auto-refreshes expired GitHub App tokens using the refresh token.
+For email/viewer users, proxies through the invitor's GitHub token.
 """
 
 import logging
@@ -12,7 +13,7 @@ from fastapi import HTTPException
 
 from app.config import get_settings
 from app.services.crypto import decrypt_token, encrypt_token
-from app.services.user_service import update_tokens
+from app.services.user_service import update_tokens, get_user_by_id
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +25,36 @@ REFRESH_BUFFER_SECONDS = 300
 
 async def resolve_github_token(user: dict) -> str:
     """
-    Decrypt and return the user's GitHub access token.
-    If the token is expired (GitHub App tokens last ~8h),
-    automatically refresh it using the stored refresh token.
+    Decrypt and return the GitHub access token for the user.
+    - GitHub users: use their own token (auto-refreshed if expired).
+    - Email/viewer users: proxy through the invitor's token.
     """
+    # Email users proxy through the invitor's GitHub token
+    if user.get("auth_method") == "email":
+        proxy_user_id = user.get("proxy_github_user_id")
+        if not proxy_user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Kein verknüpfter GitHub-Benutzer. Bitte den Administrator kontaktieren.",
+            )
+        proxy_user = await get_user_by_id(proxy_user_id)
+        if not proxy_user:
+            raise HTTPException(
+                status_code=403,
+                detail="Verknüpfter GitHub-Benutzer nicht gefunden.",
+            )
+        logger.info(
+            "Resolving proxy GitHub token for viewer %s via %s",
+            user.get("email"),
+            proxy_user.get("github_login"),
+        )
+        return await _resolve_token_for_github_user(proxy_user)
+
+    return await _resolve_token_for_github_user(user)
+
+
+async def _resolve_token_for_github_user(user: dict) -> str:
+    """Resolve token for a GitHub-authenticated user (with auto-refresh)."""
     encrypted_access = user.get("github_access_token")
     if not encrypted_access:
         raise HTTPException(

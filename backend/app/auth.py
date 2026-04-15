@@ -1,6 +1,11 @@
 # app/auth.py
 """
 Session-based authentication via signed HttpOnly cookies.
+Provides FastAPI dependencies for different access levels:
+  - get_current_user:   valid session (may not be activated)
+  - get_activated_user: session + activated account
+  - get_admin_user:     session + admin role
+  - get_github_user:    session + activated + GitHub auth method
 """
 
 import logging
@@ -37,6 +42,14 @@ def verify_session_cookie(token: str, settings: Settings) -> str | None:
         return None
 
 
+def is_admin(user: dict, settings: Settings) -> bool:
+    """Check if a user is the configured admin."""
+    admin_login = settings.admin_github_login
+    if not admin_login:
+        return False
+    return user.get("github_login") == admin_login
+
+
 async def get_current_user(
     request: Request,
     settings: Settings = Depends(get_settings),
@@ -56,4 +69,32 @@ async def get_current_user(
 
     # Fire-and-forget last_seen update
     await touch_last_seen(user_id)
+    return user
+
+
+async def get_activated_user(
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Only allow users whose account has been activated (code redeemed or admin)."""
+    if not user.get("activated", False):
+        raise HTTPException(status_code=403, detail="activation_required")
+    return user
+
+
+async def get_admin_user(
+    user: dict = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    """Only allow the configured admin user."""
+    if not is_admin(user, settings):
+        raise HTTPException(status_code=403, detail="Nur Administratoren.")
+    return user
+
+
+async def get_github_user(
+    user: dict = Depends(get_activated_user),
+) -> dict:
+    """Only allow activated users with GitHub auth (have their own GitHub token)."""
+    if user.get("auth_method", "github") != "github":
+        raise HTTPException(status_code=403, detail="GitHub-Konto erforderlich.")
     return user

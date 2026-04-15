@@ -8,7 +8,7 @@ from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.auth import get_current_user
+from app.auth import get_activated_user
 from app.config import get_settings, Settings
 from app.services.github_service import GitHubService
 from app.services.token_resolver import resolve_github_token
@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 async def repo_summary(
     repo: str = Query(..., description="owner/repo"),
     refresh: bool = Query(False, description="Force refresh from GitHub"),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_activated_user),
 ):
     """
     Return repo summary stats.
@@ -55,7 +55,7 @@ async def repo_summary(
 @router.get("/details")
 async def repo_details(
     repo: str = Query(..., description="owner/repo"),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_activated_user),
 ):
     """
     Return extended dashboard data: commit activity, languages,

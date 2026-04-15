@@ -8,7 +8,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.auth import get_current_user
+from app.auth import get_activated_user
 from app.config import get_settings, Settings
 from app.models.api import ChatRequest
 from app.services.llm_factory import LLMConfig, infer_provider
@@ -25,7 +25,7 @@ router = APIRouter(prefix="/api", tags=["chat"])
 @router.post("/chat")
 async def chat(
     request: ChatRequest,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_activated_user),
     settings: Settings = Depends(get_settings),
 ):
     logger.info("Chat request: query=%r, repo=%r", request.query, request.repo)
@@ -35,6 +35,29 @@ async def chat(
     repo = request.repo
     if not repo:
         raise HTTPException(status_code=422, detail="Kein Repository ausgewählt.")
+
+    # Viewers: verify repo is in their allowed list
+    if user.get("auth_method") == "email":
+        allowed_ids = user.get("allowed_repo_ids", [])
+        if allowed_ids:
+            from app.db import get_db as _get_db
+            _db = _get_db()
+            proxy_user_id = user.get("proxy_github_user_id", "")
+            allowed_repo = await _db.repos.find_one({
+                "user_id": proxy_user_id,
+                "repo_id": {"$in": allowed_ids},
+                "repo_full_name": repo,
+            })
+            if not allowed_repo:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Kein Zugriff auf dieses Repository.",
+                )
+        else:
+            raise HTTPException(
+                status_code=403,
+                detail="Kein Zugriff auf Repositories.",
+            )
 
     # Resolve LLM
     model = request.model or settings.default_llm_model
@@ -118,7 +141,7 @@ async def chat(
 # ── Chat history endpoints ──────────────────────────────────────────────
 
 @router.get("/chats")
-async def list_chats(user: dict = Depends(get_current_user)):
+async def list_chats(user: dict = Depends(get_activated_user)):
     user_id = str(user["_id"])
     chats = await chat_store.list_chats(user_id)
     return [
@@ -133,7 +156,7 @@ async def list_chats(user: dict = Depends(get_current_user)):
 
 
 @router.get("/chats/{chat_id}")
-async def get_chat(chat_id: str, user: dict = Depends(get_current_user)):
+async def get_chat(chat_id: str, user: dict = Depends(get_activated_user)):
     user_id = str(user["_id"])
     doc = await chat_store.get_chat(chat_id, user_id)
     if not doc:
@@ -148,7 +171,7 @@ async def get_chat(chat_id: str, user: dict = Depends(get_current_user)):
 
 
 @router.delete("/chats/{chat_id}")
-async def delete_chat(chat_id: str, user: dict = Depends(get_current_user)):
+async def delete_chat(chat_id: str, user: dict = Depends(get_activated_user)):
     user_id = str(user["_id"])
     deleted = await chat_store.delete_chat(chat_id, user_id)
     if not deleted:

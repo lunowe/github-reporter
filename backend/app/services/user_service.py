@@ -1,13 +1,17 @@
 # app/services/user_service.py
 """
-User management — GitHub App OAuth based.
+User management — GitHub App OAuth based, with activation & email auth support.
 """
 
+import logging
 from datetime import datetime, timedelta, timezone
 
+import bcrypt
 from bson import ObjectId
 
 from app.db import get_db
+
+logger = logging.getLogger(__name__)
 
 
 async def upsert_from_github(
@@ -15,6 +19,9 @@ async def upsert_from_github(
     access_token_encrypted: str,
     refresh_token_encrypted: str = "",
     expires_in: int = 0,
+    *,
+    admin_github_login: str = "",
+    require_access_code: bool = True,
 ) -> dict:
     """
     Create or update a user from GitHub App OAuth data.
@@ -25,15 +32,20 @@ async def upsert_from_github(
     now = datetime.now(timezone.utc)
 
     github_id = github_user["id"]
+    github_login = github_user["login"]
 
     # Calculate expiry: GitHub App tokens expire in ~8 hours
     token_expires_at = now + timedelta(seconds=expires_in) if expires_in else None
 
+    # Determine if this user should be auto-activated
+    is_admin = bool(admin_github_login and github_login == admin_github_login)
+    auto_activate = is_admin or not require_access_code
+
     update_fields: dict = {
-        "github_login": github_user["login"],
+        "github_login": github_login,
         "github_avatar_url": github_user.get("avatar_url", ""),
         "github_access_token": access_token_encrypted,
-        "display_name": github_user.get("name") or github_user["login"],
+        "display_name": github_user.get("name") or github_login,
         "email": github_user.get("email") or "",
         "last_seen_at": now,
     }
@@ -43,15 +55,34 @@ async def upsert_from_github(
     if token_expires_at:
         update_fields["github_token_expires_at"] = token_expires_at
 
+    # Admin is always activated
+    if is_admin:
+        update_fields["activated"] = True
+        update_fields["activated_via"] = "admin"
+        update_fields["activated_at"] = now
+
+    set_on_insert: dict = {
+        "github_id": github_id,
+        "role": "user",
+        "auth_method": "github",
+        "created_at": now,
+    }
+
+    # New users: activated depends on settings
+    if auto_activate:
+        set_on_insert["activated"] = True
+        set_on_insert["activated_via"] = "admin" if is_admin else "no_code_required"
+        set_on_insert["activated_at"] = now
+    else:
+        set_on_insert["activated"] = False
+        set_on_insert["activated_via"] = None
+        set_on_insert["activated_at"] = None
+
     result = await db.users.find_one_and_update(
         {"github_id": github_id},
         {
             "$set": update_fields,
-            "$setOnInsert": {
-                "github_id": github_id,
-                "role": "user",
-                "created_at": now,
-            },
+            "$setOnInsert": set_on_insert,
         },
         upsert=True,
         return_document=True,
@@ -59,6 +90,71 @@ async def upsert_from_github(
 
     result["id"] = str(result["_id"])
     return result
+
+
+async def create_email_user(
+    email: str,
+    password: str,
+    display_name: str,
+    invited_by: str,
+    proxy_github_user_id: str,
+    allowed_repo_ids: list[str],
+) -> dict:
+    """Create a viewer user from an email invite."""
+    db = get_db()
+    now = datetime.now(timezone.utc)
+
+    password_hash = bcrypt.hashpw(
+        password.encode("utf-8"), bcrypt.gensalt()
+    ).decode("utf-8")
+
+    doc = {
+        "auth_method": "email",
+        "role": "viewer",
+        "email": email,
+        "display_name": display_name or email.split("@")[0],
+        "password_hash": password_hash,
+        "proxy_github_user_id": proxy_github_user_id,
+        "allowed_repo_ids": allowed_repo_ids,
+        "invited_by": invited_by,
+        "activated": True,
+        "activated_via": "invite",
+        "activated_at": now,
+        "created_at": now,
+        "last_seen_at": now,
+        # GitHub fields empty for email users
+        "github_id": None,
+        "github_login": None,
+        "github_avatar_url": "",
+        "github_access_token": None,
+        "github_refresh_token": None,
+        "github_token_expires_at": None,
+    }
+
+    result = await db.users.insert_one(doc)
+    doc["_id"] = result.inserted_id
+    doc["id"] = str(result.inserted_id)
+    return doc
+
+
+async def get_user_by_email(email: str) -> dict | None:
+    """Look up an email-auth user by their email address."""
+    db = get_db()
+    user = await db.users.find_one({"email": email, "auth_method": "email"})
+    if user:
+        user["id"] = str(user["_id"])
+    return user
+
+
+def verify_password(user: dict, password: str) -> bool:
+    """Verify a password against the stored bcrypt hash."""
+    stored_hash = user.get("password_hash", "")
+    if not stored_hash:
+        return False
+    return bcrypt.checkpw(
+        password.encode("utf-8"),
+        stored_hash.encode("utf-8"),
+    )
 
 
 async def update_tokens(
@@ -99,6 +195,25 @@ async def get_user_by_id(user_id: str) -> dict | None:
     return user
 
 
+async def list_all_users() -> list[dict]:
+    """List all users (admin view)."""
+    db = get_db()
+    users = []
+    async for user in db.users.find().sort("created_at", -1):
+        users.append({
+            "id": str(user["_id"]),
+            "display_name": user.get("display_name", ""),
+            "github_login": user.get("github_login"),
+            "email": user.get("email", ""),
+            "role": user.get("role", "user"),
+            "auth_method": user.get("auth_method", "github"),
+            "activated": user.get("activated", False),
+            "created_at": user.get("created_at", ""),
+            "last_seen_at": user.get("last_seen_at", ""),
+        })
+    return users
+
+
 async def touch_last_seen(user_id: str):
     """Update last_seen_at timestamp."""
     db = get_db()
@@ -111,7 +226,39 @@ async def touch_last_seen(user_id: str):
         pass
 
 
+async def migrate_existing_users():
+    """
+    One-time migration: ensure all existing users have the new activation fields.
+    Existing users are grandfathered in as activated.
+    """
+    db = get_db()
+    result = await db.users.update_many(
+        {"activated": {"$exists": False}},
+        {
+            "$set": {
+                "activated": True,
+                "auth_method": "github",
+                "activated_via": "migration",
+                "activated_at": datetime.now(timezone.utc),
+            },
+        },
+    )
+    if result.modified_count > 0:
+        logger.info("Migrated %d existing users (set activated=True)", result.modified_count)
+
+
 async def ensure_indexes():
     """Create indexes for the users collection."""
     db = get_db()
-    await db.users.create_index("github_id", unique=True)
+
+    # The original index was unique but not sparse. Email users have github_id=None,
+    # so we need sparse=True to allow multiple nulls. Drop and recreate if needed.
+    try:
+        await db.users.create_index("github_id", unique=True, sparse=True)
+    except Exception:
+        # Conflict with existing non-sparse index — drop and recreate
+        logger.info("Recreating github_id index with sparse=True")
+        await db.users.drop_index("github_id_1")
+        await db.users.create_index("github_id", unique=True, sparse=True)
+
+    await db.users.create_index("email", sparse=True)

@@ -2,6 +2,7 @@
 """
 GitHub App authentication endpoints (SPA-friendly, no redirect responses).
 Uses the GitHub App user-to-server OAuth flow with token refresh.
+Also supports email/password login for invited users.
 """
 
 import logging
@@ -17,10 +18,15 @@ from app.auth import (
     SESSION_MAX_AGE,
     create_session_cookie,
     get_current_user,
+    is_admin,
 )
 from app.config import Settings, get_settings
 from app.services.crypto import encrypt_token
-from app.services.user_service import upsert_from_github
+from app.services.user_service import (
+    upsert_from_github,
+    get_user_by_email,
+    verify_password,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +35,22 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
 GITHUB_USER_URL = "https://api.github.com/user"
+
+
+def _user_profile(user: dict, settings: Settings) -> dict:
+    """Build the user profile response dict."""
+    return {
+        "id": str(user["_id"]),
+        "github_id": user.get("github_id"),
+        "github_login": user.get("github_login"),
+        "avatar_url": user.get("github_avatar_url", ""),
+        "display_name": user.get("display_name", user.get("github_login", "")),
+        "email": user.get("email", ""),
+        "role": user.get("role", "user"),
+        "activated": user.get("activated", False),
+        "auth_method": user.get("auth_method", "github"),
+        "is_admin": is_admin(user, settings),
+    }
 
 
 @router.get("/github-url")
@@ -128,17 +150,12 @@ async def github_exchange(
         access_token_encrypted=encrypted_access,
         refresh_token_encrypted=encrypted_refresh,
         expires_in=expires_in,
+        admin_github_login=settings.admin_github_login,
+        require_access_code=settings.require_access_code,
     )
 
     # Build JSON response with session cookie
-    user_profile = {
-        "id": str(user["_id"]),
-        "github_id": user["github_id"],
-        "github_login": user["github_login"],
-        "avatar_url": user.get("github_avatar_url", ""),
-        "display_name": user.get("display_name", user["github_login"]),
-        "email": user.get("email", ""),
-    }
+    user_profile = _user_profile(user, settings)
 
     session_token = create_session_cookie(str(user["_id"]), settings)
     response = JSONResponse(content={"user": user_profile})
@@ -155,6 +172,40 @@ async def github_exchange(
     return response
 
 
+@router.post("/email/login")
+async def email_login(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+):
+    """Email/password login for invited users."""
+    body = await request.json()
+    email = body.get("email", "").strip().lower()
+    password = body.get("password", "")
+
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="E-Mail und Passwort erforderlich.")
+
+    user = await get_user_by_email(email)
+    if not user or not verify_password(user, password):
+        raise HTTPException(status_code=401, detail="Ungültige Anmeldedaten.")
+
+    user_profile = _user_profile(user, settings)
+
+    session_token = create_session_cookie(str(user["_id"]), settings)
+    response = JSONResponse(content={"user": user_profile})
+    response.set_cookie(
+        SESSION_COOKIE,
+        session_token,
+        max_age=SESSION_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+
+    logger.info("User logged in via email: %s", email)
+    return response
+
+
 @router.post("/logout")
 async def logout():
     """Clear the session cookie."""
@@ -164,13 +215,9 @@ async def logout():
 
 
 @router.get("/me")
-async def me(user: dict = Depends(get_current_user)):
+async def me(
+    user: dict = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+):
     """Return the current user's profile."""
-    return {
-        "id": str(user["_id"]),
-        "github_id": user["github_id"],
-        "github_login": user["github_login"],
-        "avatar_url": user.get("github_avatar_url", ""),
-        "display_name": user.get("display_name", user["github_login"]),
-        "email": user.get("email", ""),
-    }
+    return _user_profile(user, settings)

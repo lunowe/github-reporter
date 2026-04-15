@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Trash2, GitBranch, GitFork } from "lucide-vue-next";
+import { GitBranch, GitFork } from "lucide-vue-next";
 
 const {
   messages,
@@ -76,6 +76,9 @@ function handleSuggestion(question: string) {
       >
         {{ activeRepoLabel }}
       </Badge>
+      <div class="ml-auto">
+        <ChatExportMenu />
+      </div>
     </div>
 
     <!-- ═══ NO REPO SELECTED — full-page prompt ═══ -->

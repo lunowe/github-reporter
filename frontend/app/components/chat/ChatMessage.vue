@@ -44,6 +44,14 @@ const TOOL_LABELS: Record<string, string> = {
 const isThinking = computed(
   () => !isUser.value && !props.message.content && !props.message.toolCalls?.length,
 );
+
+// True when all tool calls are done but the assistant hasn't started responding with text yet
+const isThinkingAfterTools = computed(() => {
+  if (isUser.value || props.message.content) return false;
+  const calls = props.message.toolCalls;
+  if (!calls?.length) return false;
+  return calls.every((tc) => tc.status === "done" || tc.status === "error");
+});
 </script>
 
 <template>
@@ -110,6 +118,15 @@ const isThinking = computed(
             </CollapsibleContent>
           </Collapsible>
         </div>
+      </div>
+
+      <!-- Thinking indicator after tool calls complete -->
+      <div
+        v-if="isThinkingAfterTools"
+        class="flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm text-muted-foreground"
+      >
+        <Loader2 class="h-4 w-4 animate-spin" />
+        <span>Denkt nach...</span>
       </div>
 
       <!-- User message (plain text) -->

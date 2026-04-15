@@ -10,7 +10,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from github import Github, Auth
 
-from app.auth import get_current_user
+from app.auth import get_activated_user
 from app.config import Settings, get_settings
 from app.db import get_db
 from app.models.api import RepoConnection, RepoConnectionOut
@@ -23,11 +23,25 @@ router = APIRouter(prefix="/api", tags=["repos"])
 
 @router.get("/repos", response_model=list[RepoConnectionOut])
 async def list_repos(
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_activated_user),
 ):
     db = get_db()
+
+    # Viewers only see repos they were granted access to
+    if user.get("auth_method") == "email":
+        allowed_ids = user.get("allowed_repo_ids", [])
+        if not allowed_ids:
+            return []
+        # Look up the proxy user's repos, filtered to allowed IDs
+        proxy_user_id = user.get("proxy_github_user_id")
+        if not proxy_user_id:
+            return []
+        query = {"user_id": proxy_user_id, "repo_id": {"$in": allowed_ids}}
+    else:
+        query = {"user_id": str(user["_id"])}
+
     repos = []
-    async for doc in db.repos.find({"user_id": str(user["_id"])}):
+    async for doc in db.repos.find(query):
         repos.append({
             "id": doc.get("repo_id", str(doc["_id"])),
             "repo_full_name": doc["repo_full_name"],
@@ -41,8 +55,11 @@ async def list_repos(
 @router.post("/repos", response_model=RepoConnectionOut)
 async def add_repo(
     body: RepoConnection,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_activated_user),
 ):
+    # Viewers cannot add repos
+    if user.get("auth_method") == "email":
+        raise HTTPException(status_code=403, detail="Nur GitHub-Benutzer können Repositories hinzufügen.")
     db = get_db()
     user_id = str(user["_id"])
 
@@ -73,7 +90,7 @@ async def add_repo(
 
 @router.get("/repos/available")
 async def available_repos(
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_activated_user),
     settings: Settings = Depends(get_settings),
 ):
     """
@@ -123,8 +140,11 @@ async def available_repos(
 @router.delete("/repos/{repo_id}")
 async def delete_repo(
     repo_id: str,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_activated_user),
 ):
+    # Viewers cannot delete repos
+    if user.get("auth_method") == "email":
+        raise HTTPException(status_code=403, detail="Nur GitHub-Benutzer können Repositories entfernen.")
     db = get_db()
     result = await db.repos.delete_one({
         "repo_id": repo_id,

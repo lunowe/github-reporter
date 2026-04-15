@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Github, Settings, MessageSquare, LayoutDashboard, Menu, LogOut } from "lucide-vue-next";
+import { Github, Settings, MessageSquare, LayoutDashboard, Menu, LogOut, Shield, User } from "lucide-vue-next";
 
 // Initialise theme on app load so the .dark class is applied early
 useTheme();
@@ -7,17 +7,31 @@ useTheme();
 const route = useRoute();
 
 const { fetchRepos } = useRepos();
-const { user, logout } = useAuth();
+const { user, logout, isAdmin, isViewer } = useAuth();
 
 const mobileOpen = ref(false);
 
 onMounted(() => fetchRepos());
 
-const navItems = [
-  { to: "/", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/chat", label: "Chat", icon: MessageSquare },
-  { to: "/settings", label: "Einstellungen", icon: Settings },
-];
+// Build nav items based on role
+const navItems = computed(() => {
+  const items = [
+    { to: "/", label: "Dashboard", icon: LayoutDashboard },
+    { to: "/chat", label: "Chat", icon: MessageSquare },
+  ];
+
+  // Viewers can't manage repos/settings
+  if (!isViewer.value) {
+    items.push({ to: "/settings", label: "Einstellungen", icon: Settings });
+  }
+
+  // Admin gets admin page
+  if (isAdmin.value) {
+    items.push({ to: "/admin", label: "Admin", icon: Shield });
+  }
+
+  return items;
+});
 </script>
 
 <template>
@@ -82,18 +96,21 @@ const navItems = [
           <DropdownMenuTrigger as-child>
             <Button variant="ghost" size="sm" class="gap-2 px-2">
               <img
+                v-if="user.avatar_url"
                 :src="user.avatar_url"
-                :alt="user.github_login"
+                :alt="user.github_login || user.display_name"
                 class="h-6 w-6 rounded-full"
               />
-              <span class="hidden text-sm sm:inline">{{ user.github_login }}</span>
+              <User v-else class="h-5 w-5 text-muted-foreground" />
+              <span class="hidden text-sm sm:inline">{{ user.github_login || user.display_name }}</span>
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" class="w-48">
             <DropdownMenuLabel class="font-normal">
               <div class="flex flex-col gap-1">
                 <p class="text-sm font-medium">{{ user.display_name }}</p>
-                <p class="text-xs text-muted-foreground">@{{ user.github_login }}</p>
+                <p v-if="user.github_login" class="text-xs text-muted-foreground">@{{ user.github_login }}</p>
+                <p v-else-if="user.email" class="text-xs text-muted-foreground">{{ user.email }}</p>
               </div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />

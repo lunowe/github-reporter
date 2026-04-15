@@ -16,6 +16,9 @@ from app.routes.auth import router as auth_router
 from app.routes.chat import router as chat_router
 from app.routes.repos import router as repos_router
 from app.routes.dashboard import router as dashboard_router
+from app.routes.access_codes import router as access_codes_router
+from app.routes.invites import router as invites_router
+from app.routes.admin import router as admin_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,10 +37,18 @@ async def lifespan(app: FastAPI):
 
     from app.services.chat_store import ensure_indexes as chat_indexes
     from app.services.dashboard_cache import ensure_indexes as dashboard_indexes
-    from app.services.user_service import ensure_indexes as user_indexes
+    from app.services.user_service import ensure_indexes as user_indexes, migrate_existing_users
+    from app.services.access_code_service import ensure_indexes as access_code_indexes
+    from app.services.invite_service import ensure_indexes as invite_indexes
+
     await chat_indexes()
     await dashboard_indexes()
     await user_indexes()
+    await access_code_indexes()
+    await invite_indexes()
+
+    # Migrate existing users to have activation fields
+    await migrate_existing_users()
 
     logging.getLogger(__name__).info("MongoDB connected: %s", settings.mongodb_db_name)
     yield
@@ -50,7 +61,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="GitHub Reporter",
         description="Agentic tool to query GitHub repos for project status reports.",
-        version="0.2.0",
+        version="0.3.0",
         lifespan=lifespan,
     )
 
@@ -68,6 +79,9 @@ def create_app() -> FastAPI:
     app.include_router(chat_router)
     app.include_router(repos_router)
     app.include_router(dashboard_router)
+    app.include_router(access_codes_router)
+    app.include_router(invites_router)
+    app.include_router(admin_router)
 
     return app
 
