@@ -37,12 +37,22 @@ async def repo_summary(
             return {"source": "cache", "summary": cached}
 
     # Fetch fresh from GitHub using the user's own OAuth token
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
     token = await resolve_github_token(user)
 
     logger.info("Dashboard cache miss — fetching %s from GitHub", repo)
     try:
         github_service = GitHubService(token=token, repo_full_name=repo)
-        summary = github_service.get_repo_summary()
+        loop = asyncio.get_event_loop()
+        executor = ThreadPoolExecutor(max_workers=1)
+        summary = await asyncio.wait_for(
+            loop.run_in_executor(executor, github_service.get_repo_summary),
+            timeout=15,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="GitHub API timeout — bitte erneut versuchen")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"GitHub API Fehler: {e}")
 

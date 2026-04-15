@@ -10,8 +10,9 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from github import Github, Auth
+from github import Github, Auth, GithubRetry
 from cachetools import TTLCache
+from urllib3 import Retry
 
 from app.utils import trunc
 
@@ -29,7 +30,15 @@ class GitHubService:
     """Thin wrapper around PyGithub for a single repository."""
 
     def __init__(self, token: str, repo_full_name: str):
-        self.github = Github(auth=Auth.Token(token))
+        # Use a conservative retry policy: retry on server errors only,
+        # NOT on 403 (which PyGithub misinterprets as rate-limiting when
+        # it's actually a permissions error — causing ~40min backoffs).
+        retry = GithubRetry(
+            total=3,
+            status_forcelist=[500, 502, 503, 504],
+            backoff_factor=0.5,
+        )
+        self.github = Github(auth=Auth.Token(token), retry=retry)
         self.repo = self.github.get_repo(repo_full_name)
         self.repo_full_name = repo_full_name
 
@@ -289,20 +298,20 @@ class GitHubService:
         Uses the GitHub Statistics API which may return None on first call
         (GitHub returns 202 while computing). We don't retry — just return empty."""
         try:
-            # PyGithub's get_stats_commit_activity can block/retry internally.
-            # Use the raw requester with a short timeout to avoid hanging.
             status, headers, data = self.repo._requester.requestJson(
                 "GET",
                 self.repo.url + "/stats/commit_activity",
             )
-            if status == 202 or not data:
-                # GitHub is still computing stats — return empty, will work next time
+            if status in (202, 403) or not data:
+                # 202 = GitHub is still computing stats
+                # 403 = permission denied (don't retry, just return empty)
                 return []
             return [
                 {"week": entry["week"], "total": entry["total"]}
                 for entry in data
             ]
-        except Exception:
+        except Exception as e:
+            logger.debug("get_commit_activity failed: %s", e)
             return []
 
     def get_languages(self) -> dict:
