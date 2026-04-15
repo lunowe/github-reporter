@@ -69,14 +69,16 @@ async def upsert_from_github(
     }
 
     # New users: activated depends on settings
-    if auto_activate:
-        set_on_insert["activated"] = True
-        set_on_insert["activated_via"] = "admin" if is_admin else "no_code_required"
-        set_on_insert["activated_at"] = now
-    else:
-        set_on_insert["activated"] = False
-        set_on_insert["activated_via"] = None
-        set_on_insert["activated_at"] = None
+    # Skip if admin — those fields are already in $set and would conflict
+    if not is_admin:
+        if auto_activate:
+            set_on_insert["activated"] = True
+            set_on_insert["activated_via"] = "no_code_required"
+            set_on_insert["activated_at"] = now
+        else:
+            set_on_insert["activated"] = False
+            set_on_insert["activated_via"] = None
+            set_on_insert["activated_at"] = None
 
     result = await db.users.find_one_and_update(
         {"github_id": github_id},
