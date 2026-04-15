@@ -1,0 +1,102 @@
+@reference "./tailwind.css";
+
+/* Markdown rendering styles for agent responses */
+
+.markdown {
+  @apply text-sm leading-relaxed;
+}
+
+.markdown p {
+  @apply mb-3 last:mb-0;
+}
+
+.markdown h1 {
+  @apply text-xl font-bold mt-6 mb-3;
+}
+.markdown h2 {
+  @apply text-lg font-bold mt-5 mb-2;
+}
+.markdown h3 {
+  @apply text-base font-semibold mt-4 mb-2;
+}
+.markdown h4 {
+  @apply text-sm font-semibold mt-3 mb-1;
+}
+
+.markdown ul {
+  @apply list-disc pl-5 mb-3 space-y-1;
+}
+.markdown ol {
+  @apply list-decimal pl-5 mb-3 space-y-1;
+}
+.markdown li {
+  @apply leading-relaxed;
+}
+.markdown li > ul,
+.markdown li > ol {
+  @apply mt-1 mb-0;
+}
+
+.markdown strong {
+  @apply font-semibold;
+}
+
+.markdown a {
+  @apply text-primary underline underline-offset-2;
+}
+
+.markdown blockquote {
+  @apply border-l-2 pl-4 italic text-muted-foreground mb-3;
+}
+
+.markdown hr {
+  @apply border-border my-4;
+}
+
+/* Inline code */
+.markdown code:not(.hljs) {
+  @apply bg-muted px-1.5 py-0.5 rounded text-[13px] font-mono;
+}
+
+/* Code blocks */
+.markdown .code-block {
+  @apply rounded-lg border overflow-hidden mb-3;
+  background: #0d1117;
+}
+.markdown .code-block .code-block-header {
+  @apply flex items-center justify-between px-3 py-1.5 text-xs;
+  background: #161b22;
+  color: #8b949e;
+}
+.markdown .code-block .code-lang {
+  @apply font-mono;
+}
+.markdown .code-block .copy-btn {
+  @apply text-[11px] px-2 py-0.5 rounded cursor-pointer;
+  transition: background 0.15s;
+}
+.markdown .code-block .copy-btn:hover {
+  background: #30363d;
+}
+.markdown .code-block pre {
+  @apply p-3 overflow-x-auto;
+}
+.markdown .code-block code {
+  @apply text-[13px] font-mono leading-relaxed;
+}
+
+/* Tables */
+.markdown table {
+  @apply w-full border-collapse mb-3 text-sm;
+}
+.markdown th {
+  @apply border border-border bg-muted px-3 py-1.5 text-left font-medium;
+}
+.markdown td {
+  @apply border border-border px-3 py-1.5;
+}
+
+/* Images */
+.markdown img {
+  @apply max-w-full rounded-md my-3;
+}

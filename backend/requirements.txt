@@ -1,0 +1,26 @@
+# Core
+fastapi[standard]
+uvicorn
+python-dotenv
+pydantic
+pydantic-settings
+
+# GitHub
+PyGithub
+
+# LlamaIndex – agent + LLM providers
+llama-index-core
+llama-index-llms-google-genai
+llama-index-llms-openai
+llama-index-llms-anthropic
+
+# MongoDB
+motor
+
+# Caching
+cachetools
+
+# Auth & crypto
+cryptography
+httpx
+itsdangerous
