@@ -124,13 +124,8 @@ async def create_email_user(
         "activated_at": now,
         "created_at": now,
         "last_seen_at": now,
-        # GitHub fields empty for email users
-        "github_id": None,
-        "github_login": None,
-        "github_avatar_url": "",
-        "github_access_token": None,
-        "github_refresh_token": None,
-        "github_token_expires_at": None,
+        # GitHub fields intentionally omitted for email users so that the
+        # sparse unique index on github_id skips these documents.
     }
 
     result = await db.users.insert_one(doc)
@@ -254,13 +249,17 @@ async def ensure_indexes():
     db = get_db()
 
     # The original index was unique but not sparse. Email users have github_id=None,
-    # so we need sparse=True to allow multiple nulls. Drop and recreate if needed.
-    try:
-        await db.users.create_index("github_id", unique=True, sparse=True)
-    except Exception:
-        # Conflict with existing non-sparse index — drop and recreate
-        logger.info("Recreating github_id index with sparse=True")
+    # so we need sparse=True to allow multiple nulls.
+    # NOTE: create_index is idempotent by *name* — if github_id_1 already exists
+    # (even without sparse), it silently returns without updating options.
+    # We must check the existing index and drop it if it lacks sparse=True.
+    existing = await db.users.index_information()
+    gh_index = existing.get("github_id_1")
+    if gh_index and not gh_index.get("sparse", False):
+        logger.info("Dropping non-sparse github_id index and recreating with sparse=True")
         await db.users.drop_index("github_id_1")
+        await db.users.create_index("github_id", unique=True, sparse=True)
+    elif not gh_index:
         await db.users.create_index("github_id", unique=True, sparse=True)
 
     await db.users.create_index("email", sparse=True)
