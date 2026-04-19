@@ -98,6 +98,12 @@ async def available_repos(
     With GitHub Apps, the user token only sees repos where the app is installed.
     Returns { repos, install_url, installed }.
     """
+    if user.get("auth_method") == "email":
+        raise HTTPException(
+            status_code=403,
+            detail="Viewer-Konten können keine verfügbaren Repositories abfragen.",
+        )
+
     token = await resolve_github_token(user)
     install_url = (
         f"https://github.com/apps/{settings.github_app_slug}/installations/new"

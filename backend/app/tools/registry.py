@@ -33,6 +33,7 @@ def build_all_tools(github_service: GitHubService) -> list[FunctionTool]:
     import app.tools.compare          # noqa: F401
     import app.tools.contributors     # noqa: F401
     import app.tools.search           # noqa: F401
+    import app.tools.packages         # noqa: F401
 
     tools: list[FunctionTool] = []
     for tool_id, factory in TOOL_REGISTRY.items():

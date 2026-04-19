@@ -17,6 +17,9 @@ llama-index-llms-anthropic
 # MongoDB
 motor
 
+# Redis — stream registry + pub/sub for durable chat runs
+redis>=5.0
+
 # Caching
 cachetools
 
@@ -25,3 +28,9 @@ cryptography
 httpx
 itsdangerous
 bcrypt
+
+# Automations — scheduling + email
+apscheduler
+croniter
+aiosmtplib
+jinja2

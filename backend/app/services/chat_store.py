@@ -5,19 +5,34 @@ Chat persistence — save and load conversations.
 
 import uuid
 from datetime import datetime, timezone
+from typing import Literal
 
 from app.db import get_db
 
+# Persisted message status — tells the UI whether to show a partial badge.
+MessageStatus = Literal["complete", "partial", "error", "cancelled"]
 
-async def create_chat(user_id: str, repo: str, title: str = "") -> dict:
-    """Create a new chat session."""
+
+async def create_chat(
+    user_id: str,
+    repo: str,
+    title: str = "",
+    model: str | None = None,
+    chat_id: str | None = None,
+) -> dict:
+    """
+    Create a new chat session. Callers may pass a pre-generated `chat_id`
+    (e.g. a UUID minted on the client so the UI can address the chat before
+    the POST returns); otherwise one is generated server-side.
+    """
     db = get_db()
     now = datetime.now(timezone.utc)
     doc = {
-        "chat_id": str(uuid.uuid4())[:12],
+        "chat_id": chat_id or str(uuid.uuid4())[:12],
         "user_id": user_id,
         "repo": repo,
         "title": title or "Neuer Chat",
+        "model": model,
         "messages": [],
         "created_at": now,
         "updated_at": now,

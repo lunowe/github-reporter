@@ -7,9 +7,11 @@ Returns plain dicts with smart truncation to stay within LLM context limits.
 from __future__ import annotations
 
 import logging
+import urllib.parse
 from datetime import datetime, timezone
 from typing import Optional
 
+import httpx
 from github import Github, Auth, GithubRetry
 from cachetools import TTLCache
 from urllib3 import Retry
@@ -24,6 +26,10 @@ _prs_cache: TTLCache = TTLCache(maxsize=128, ttl=120)
 _issues_cache: TTLCache = TTLCache(maxsize=128, ttl=300)
 _actions_cache: TTLCache = TTLCache(maxsize=64, ttl=120)
 _summary_cache: TTLCache = TTLCache(maxsize=32, ttl=600)
+_packages_cache: TTLCache = TTLCache(maxsize=64, ttl=300)
+_package_versions_cache: TTLCache = TTLCache(maxsize=128, ttl=300)
+
+GITHUB_API_BASE = "https://api.github.com"
 
 
 class GitHubService:
@@ -41,6 +47,8 @@ class GitHubService:
         self.github = Github(auth=Auth.Token(token), retry=retry)
         self.repo = self.github.get_repo(repo_full_name)
         self.repo_full_name = repo_full_name
+        # Kept for direct REST calls (GHCR / Packages API aren't covered by PyGithub)
+        self._token = token
 
     # ── Commits ─────────────────────────────────────────────────────────
 
@@ -536,33 +544,357 @@ class GitHubService:
             return [{"error": str(e)}]
 
         items: list[dict] = []
-        for item in results[:limit]:
-            # Each result has matched text fragments
-            fragments: list[str] = []
-            if hasattr(item, "text_matches") and item.text_matches:
-                for match in item.text_matches[:3]:
-                    fragment = match.get("fragment", "")
-                    if fragment:
-                        fragments.append(trunc(fragment, 200))
+        # NOTE: `results` is a PyGithub PaginatedList. Slicing it (results[:limit])
+        # can raise IndexError because GitHub's code-search total_count often
+        # overstates the number of retrievable items, and PyGithub trusts that
+        # count when paging. Iterate with a counter and swallow the pagination
+        # error so we return whatever we did manage to fetch.
+        try:
+            for item in results:
+                if len(items) >= limit:
+                    break
 
-            items.append({
-                "path": item.path,
-                "name": item.name,
-                "url": item.html_url,
-                "fragments": fragments,
-            })
+                fragments: list[str] = []
+                if hasattr(item, "text_matches") and item.text_matches:
+                    for match in item.text_matches[:3]:
+                        fragment = match.get("fragment", "") if isinstance(match, dict) else ""
+                        if fragment:
+                            fragments.append(trunc(fragment, 200))
+
+                items.append({
+                    "path": item.path,
+                    "name": item.name,
+                    "url": item.html_url,
+                    "fragments": fragments,
+                })
+        except IndexError:
+            # PyGithub tripped over an inconsistent total_count / empty page.
+            # Return whatever we collected so far rather than failing the tool.
+            pass
+        except Exception as e:
+            if not items:
+                return [{"error": str(e)}]
 
         return items
+
+    # ── GHCR / Container Packages ───────────────────────────────────────
+    #
+    # The Packages REST API is NOT wrapped by PyGithub (only partial support),
+    # so we call it directly with httpx using the same PAT. Requires the
+    # 'read:packages' scope on classic PATs, or 'packages:read' on fine-grained
+    # tokens. For private packages the token additionally needs access to the
+    # publishing repo.
+
+    def _gh_request_json(
+        self,
+        path: str,
+        params: Optional[dict] = None,
+    ) -> tuple[int, dict | list | None]:
+        """Make a direct GitHub REST API GET call. Returns (status, json-or-None)."""
+        headers = {
+            "Authorization": f"Bearer {self._token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "github-reporter",
+        }
+        url = f"{GITHUB_API_BASE}{path}"
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                r = client.get(url, headers=headers, params=params)
+            if r.status_code >= 400:
+                logger.debug("GitHub API %s returned %s: %s", path, r.status_code, r.text[:200])
+                return r.status_code, None
+            return r.status_code, r.json()
+        except Exception as e:
+            logger.warning("GitHub API call failed for %s: %s", path, e)
+            return 599, None
+
+    @property
+    def _owner(self) -> str:
+        """Owner (user or org) login from repo_full_name."""
+        return self.repo_full_name.split("/", 1)[0]
+
+    @property
+    def _owner_path_segment(self) -> str:
+        """'orgs' or 'users' for use in the REST URL path."""
+        # PyGithub exposes owner.type as 'User' or 'Organization'
+        return "orgs" if self.repo.owner.type == "Organization" else "users"
+
+    def list_container_packages(self, only_this_repo: bool = True) -> list[dict]:
+        """List all container packages owned by the repo's owner.
+
+        When ``only_this_repo`` is True (default), filter to packages whose
+        ``repository.full_name`` matches this repo. Set to False to see every
+        image the org/user publishes on GHCR.
+        """
+        cache_key = (self.repo_full_name, "packages", only_this_repo)
+        if cache_key in _packages_cache:
+            return _packages_cache[cache_key]
+
+        status, data = self._gh_request_json(
+            f"/{self._owner_path_segment}/{self._owner}/packages",
+            params={"package_type": "container", "per_page": 100},
+        )
+        if status == 404:
+            logger.info("No container packages visible for %s (404)", self._owner)
+            _packages_cache[cache_key] = []
+            return []
+        if status != 200 or not isinstance(data, list):
+            return []
+
+        owner_login = self._owner
+        result: list[dict] = []
+        for pkg in data:
+            repo_info = pkg.get("repository") or {}
+            linked_repo = repo_info.get("full_name")
+            if only_this_repo and linked_repo and linked_repo != self.repo_full_name:
+                continue
+            # If only_this_repo=True and the package has no linked repo, keep it
+            # too — user-published images sometimes lack that link but may still
+            # belong to the project.
+            pkg_owner = (pkg.get("owner") or {}).get("login") or owner_login
+            pkg_name = pkg.get("name") or ""
+            result.append({
+                "name": pkg_name,
+                "owner": pkg_owner,
+                "visibility": pkg.get("visibility"),
+                "version_count": pkg.get("version_count"),
+                "linked_repo": linked_repo,
+                "ghcr_ref": f"ghcr.io/{pkg_owner.lower()}/{pkg_name}",
+                "html_url": pkg.get("html_url"),
+                "created_at": pkg.get("created_at"),
+                "updated_at": pkg.get("updated_at"),
+            })
+
+        _packages_cache[cache_key] = result
+        return result
+
+    def get_container_image_tags(
+        self,
+        package_name: str,
+        limit: int = 30,
+    ) -> list[dict]:
+        """List versions (= immutable pushes, each with 0..N tags) of a container image.
+
+        Each version has a SHA256 digest (``digest``) and may have multiple tags
+        pointing at it. Untagged versions appear with an empty ``tags`` list.
+        """
+        limit = max(1, min(limit, 100))
+        cache_key = (self.repo_full_name, "package_versions", package_name, limit)
+        if cache_key in _package_versions_cache:
+            return _package_versions_cache[cache_key]
+
+        # Package names may contain slashes (e.g. 'backend/api'); encode them.
+        safe_name = urllib.parse.quote(package_name, safe="")
+        status, data = self._gh_request_json(
+            f"/{self._owner_path_segment}/{self._owner}"
+            f"/packages/container/{safe_name}/versions",
+            params={"per_page": limit},
+        )
+        if status != 200 or not isinstance(data, list):
+            return []
+
+        result: list[dict] = []
+        for v in data[:limit]:
+            meta = v.get("metadata") or {}
+            container = meta.get("container") or {}
+            result.append({
+                "version_id": v.get("id"),
+                "digest": v.get("name"),  # 'sha256:...'
+                "tags": container.get("tags") or [],
+                "created_at": v.get("created_at"),
+                "updated_at": v.get("updated_at"),
+                "html_url": v.get("html_url"),
+            })
+
+        _package_versions_cache[cache_key] = result
+        return result
+
+    def get_container_image_details(
+        self,
+        package_name: str,
+        tag: Optional[str] = None,
+    ) -> dict:
+        """Detailed info on a container image, optionally narrowed to a specific tag."""
+        safe_name = urllib.parse.quote(package_name, safe="")
+        status, pkg = self._gh_request_json(
+            f"/{self._owner_path_segment}/{self._owner}"
+            f"/packages/container/{safe_name}",
+        )
+        if status == 404 or not isinstance(pkg, dict):
+            return {
+                "error": f"Container-Image '{package_name}' nicht gefunden "
+                         f"(Status {status}). Prüfe Name und Token-Scope 'read:packages'."
+            }
+        if status != 200:
+            return {"error": f"GitHub Packages API Status {status} für '{package_name}'."}
+
+        # Pull up to 100 versions so we can search tags / compute summaries.
+        versions = self.get_container_image_tags(package_name, limit=100)
+        owner_login = self._owner.lower()
+        ghcr_base = f"ghcr.io/{owner_login}/{package_name}"
+        linked_repo = (pkg.get("repository") or {}).get("full_name")
+
+        if tag:
+            matching = [v for v in versions if tag in (v.get("tags") or [])]
+            if not matching:
+                all_tags = sorted({t for v in versions for t in (v.get("tags") or [])})
+                return {
+                    "error": f"Tag '{tag}' für Image '{package_name}' nicht gefunden.",
+                    "available_tags_sample": all_tags[:30],
+                }
+            return {
+                "package": package_name,
+                "ghcr_ref": f"{ghcr_base}:{tag}",
+                "visibility": pkg.get("visibility"),
+                "linked_repo": linked_repo,
+                "total_versions": pkg.get("version_count"),
+                "tag": tag,
+                "version": matching[0],
+            }
+
+        # No tag → summary across all versions
+        all_tags = sorted({t for v in versions for t in (v.get("tags") or [])})
+        latest = versions[0] if versions else None
+        return {
+            "package": package_name,
+            "ghcr_ref": ghcr_base,
+            "visibility": pkg.get("visibility"),
+            "linked_repo": linked_repo,
+            "total_versions": pkg.get("version_count"),
+            "latest_version": latest,
+            "tags_sample": all_tags[:50],
+            "tags_total": len(all_tags),
+            "created_at": pkg.get("created_at"),
+            "updated_at": pkg.get("updated_at"),
+        }
+
+    def find_image_for_commit(
+        self,
+        commit_sha: str,
+        package_name: Optional[str] = None,
+    ) -> dict:
+        """Find container versions whose tags reference the given commit SHA.
+
+        Matches common tagging patterns produced by docker/metadata-action
+        and similar CI workflows: ``sha-<shortsha>``, ``main-<shortsha>``,
+        bare ``<shortsha>``, and full-SHA variants.
+
+        Also returns the check-runs recorded on that commit so the agent can
+        explain whether the build that would have published an image actually
+        ran + succeeded.
+        """
+        sha = (commit_sha or "").strip().lower()
+        if len(sha) < 7:
+            return {"error": "Commit-SHA muss mindestens 7 Zeichen lang sein."}
+        short = sha[:7]
+
+        # Decide which packages to scan.
+        if package_name:
+            packages_to_search = [package_name]
+        else:
+            pkgs = self.list_container_packages(only_this_repo=True)
+            packages_to_search = [p["name"] for p in pkgs]
+
+        owner_login = self._owner.lower()
+        matches: list[dict] = []
+        for pkg_name in packages_to_search:
+            versions = self.get_container_image_tags(pkg_name, limit=100)
+            for v in versions:
+                tags = v.get("tags") or []
+                hit_tag: Optional[str] = None
+                for t in tags:
+                    tl = t.lower()
+                    if sha in tl or short in tl:
+                        hit_tag = t
+                        break
+                if hit_tag:
+                    matches.append({
+                        "package": pkg_name,
+                        "matched_tag": hit_tag,
+                        "all_tags": tags,
+                        "digest": v.get("digest"),
+                        "created_at": v.get("created_at"),
+                        "ghcr_ref": f"ghcr.io/{owner_login}/{pkg_name}:{hit_tag}",
+                    })
+
+        # Context: check-runs on that commit (which CI jobs ran, did they pass).
+        status, runs_data = self._gh_request_json(
+            f"/repos/{self.repo_full_name}/commits/{sha}/check-runs",
+            params={"per_page": 20},
+        )
+        check_runs: list[dict] = []
+        if status == 200 and isinstance(runs_data, dict):
+            for cr in (runs_data.get("check_runs") or [])[:20]:
+                check_runs.append({
+                    "name": cr.get("name"),
+                    "status": cr.get("status"),
+                    "conclusion": cr.get("conclusion"),
+                    "started_at": cr.get("started_at"),
+                    "completed_at": cr.get("completed_at"),
+                    "url": cr.get("html_url"),
+                })
+
+        return {
+            "commit_sha": sha,
+            "short_sha": short,
+            "searched_packages": packages_to_search,
+            "match_count": len(matches),
+            "matches": matches,
+            "check_runs": check_runs,
+        }
 
     # ── Rate limit info ─────────────────────────────────────────────────
 
     def get_rate_limit_info(self) -> dict:
+        """Return a detailed breakdown of the authenticated user's API quota.
+
+        Includes the three buckets GitHub reports separately (core, search,
+        graphql) plus a fetched_at timestamp for the UI's countdown logic.
+        """
         rl = self.github.get_rate_limit()
+        return _format_rate_limit(rl)
+
+
+def fetch_rate_limit(token: str) -> dict:
+    """Fetch rate limit info for a token without needing a repo handle.
+
+    The GitHub /rate_limit endpoint does NOT consume API quota itself, so
+    this is cheap to poll. Blocking — call from a thread executor.
+    """
+    gh = Github(auth=Auth.Token(token))
+    rl = gh.get_rate_limit()
+    return _format_rate_limit(rl)
+
+
+def _format_rate_limit(rl) -> dict:
+    """Shape a PyGithub RateLimitOverview object into a JSON-serialisable dict.
+
+    PyGithub's ``get_rate_limit()`` returns a ``RateLimitOverview`` whose
+    per-bucket fields (core/search/graphql) live on the nested ``resources``
+    object, not on the overview itself. Older code assumed ``rl.core`` directly
+    and blew up with ``AttributeError``; we walk through ``.resources`` now and
+    fall back to the overview for forward/backward compatibility.
+    """
+    def bucket(resource) -> dict | None:
+        if resource is None:
+            return None
+        limit = resource.limit or 0
+        remaining = resource.remaining or 0
         return {
-            "remaining": rl.core.remaining,
-            "limit": rl.core.limit,
-            "resets_at": rl.core.reset.isoformat(),
+            "limit": limit,
+            "remaining": remaining,
+            "used": max(limit - remaining, 0),
+            "resets_at": resource.reset.isoformat() if resource.reset else None,
         }
+
+    resources = getattr(rl, "resources", rl)
+    return {
+        "core": bucket(getattr(resources, "core", None)),
+        "search": bucket(getattr(resources, "search", None)),
+        "graphql": bucket(getattr(resources, "graphql", None)),
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 # ── Helpers ────────────────────────────────────────────────────────────

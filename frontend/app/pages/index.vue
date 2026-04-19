@@ -15,6 +15,11 @@ onMounted(() => fetchRepos());
       </p>
     </div>
 
+    <!-- GitHub API rate-limit widget — always visible, independent of repos -->
+    <div class="mb-6">
+      <RateLimitDisplay />
+    </div>
+
     <!-- Loading state -->
     <div v-if="loading && repos.length === 0" class="flex justify-center py-12">
       <Loader2 class="h-6 w-6 animate-spin text-muted-foreground" />

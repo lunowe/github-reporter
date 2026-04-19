@@ -39,8 +39,30 @@ class Settings(BaseSettings):
     mongodb_url: str = "mongodb://localhost:27017"
     mongodb_db_name: str = "github_reporter"
 
+    # Redis — powers durable chat runs (event buffer + cancel pub/sub).
+    # Required: without it, chat streaming cannot reconnect or survive worker restarts.
+    redis_url: str = "redis://localhost:6379/0"
+    # TTL (seconds) runs linger after a terminal event, so late reconnects can replay.
+    run_ttl_seconds: int = 600
+    # How often the producer heartbeats its run. Stale runs beyond 3× this are treated as orphaned.
+    run_heartbeat_seconds: int = 5
+
     # Server
     cors_origins: str = "*"
+
+    # Automations scheduler
+    scheduler_timezone: str = "Europe/Berlin"
+    scheduler_enabled: bool = True  # set False in tests / when running migrations
+
+    # SMTP — used for automation email notifications. Works with any SMTP provider
+    # (Resend, Postmark, Sendgrid SMTP, Gmail, Mailgun…).
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_use_tls: bool = True  # STARTTLS; set False for implicit TLS on port 465 (smtp_use_ssl)
+    smtp_use_ssl: bool = False
+    smtp_from: str = ""  # e.g. "GitHub Reporter <reports@yourdomain.com>"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

@@ -205,10 +205,27 @@ async def list_all_users() -> list[dict]:
             "role": user.get("role", "user"),
             "auth_method": user.get("auth_method", "github"),
             "activated": user.get("activated", False),
+            "allowed_repo_ids": user.get("allowed_repo_ids", []),
             "created_at": user.get("created_at", ""),
             "last_seen_at": user.get("last_seen_at", ""),
         })
     return users
+
+
+async def update_allowed_repos(user_id: str, allowed_repo_ids: list[str]) -> dict | None:
+    """Update the allowed_repo_ids for a viewer user (admin action)."""
+    db = get_db()
+    try:
+        result = await db.users.find_one_and_update(
+            {"_id": ObjectId(user_id), "role": "viewer"},
+            {"$set": {"allowed_repo_ids": allowed_repo_ids}},
+            return_document=True,
+        )
+    except Exception:
+        return None
+    if result:
+        result["id"] = str(result["_id"])
+    return result
 
 
 async def touch_last_seen(user_id: str):

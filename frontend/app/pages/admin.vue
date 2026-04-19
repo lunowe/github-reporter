@@ -10,6 +10,9 @@ import {
   Loader2,
   Shield,
   ExternalLink,
+  Pencil,
+  GitBranch,
+  Save,
 } from "lucide-vue-next";
 
 const { isAdmin, user } = useAuth();
@@ -85,6 +88,7 @@ interface UserInfo {
   role: string;
   auth_method: string;
   activated: boolean;
+  allowed_repo_ids: string[];
   created_at: string;
   last_seen_at: string;
 }
@@ -99,6 +103,42 @@ async function loadUsers() {
     users.value = [];
   } finally {
     usersLoading.value = false;
+  }
+}
+
+// ── Edit Shared Repos ──
+const editingUser = ref<UserInfo | null>(null);
+const editRepoIds = ref<string[]>([]);
+const editReposSaving = ref(false);
+const editReposError = ref<string | null>(null);
+const showEditReposDialog = ref(false);
+
+function openEditRepos(u: UserInfo) {
+  editingUser.value = u;
+  editRepoIds.value = [...(u.allowed_repo_ids || [])];
+  editReposError.value = null;
+  showEditReposDialog.value = true;
+}
+
+async function saveEditRepos() {
+  if (!editingUser.value) return;
+  editReposSaving.value = true;
+  editReposError.value = null;
+  try {
+    await apiFetch(`/api/admin/users/${editingUser.value.id}/repos`, {
+      method: "PUT",
+      body: { allowed_repo_ids: editRepoIds.value },
+    });
+    // Update local state
+    const idx = users.value.findIndex((u) => u.id === editingUser.value!.id);
+    if (idx !== -1) {
+      users.value[idx].allowed_repo_ids = [...editRepoIds.value];
+    }
+    showEditReposDialog.value = false;
+  } catch (e: any) {
+    editReposError.value = e.data?.detail || e.message || "Fehler beim Speichern";
+  } finally {
+    editReposSaving.value = false;
   }
 }
 
@@ -432,6 +472,10 @@ function formatDate(d: string | Date) {
                     <Badge v-if="u.role === 'viewer'" variant="secondary" class="text-xs">Viewer</Badge>
                     <Badge v-if="u.activated" variant="outline" class="text-xs">Aktiviert</Badge>
                     <Badge v-else variant="destructive" class="text-xs">Nicht aktiviert</Badge>
+                    <Badge v-if="u.role === 'viewer'" variant="outline" class="text-xs">
+                      <GitBranch class="h-3 w-3 mr-0.5" />
+                      {{ (u.allowed_repo_ids || []).length }} Repo(s)
+                    </Badge>
                   </div>
                   <div class="text-xs text-muted-foreground mt-0.5">
                     <span v-if="u.github_login">@{{ u.github_login }}</span>
@@ -441,11 +485,72 @@ function formatDate(d: string | Date) {
                     · Zuletzt: {{ formatDate(u.last_seen_at) }}
                   </div>
                 </div>
+                <div v-if="u.role === 'viewer'" class="flex items-center gap-1">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    class="h-8 w-8 text-muted-foreground hover:text-primary"
+                    title="Repositories bearbeiten"
+                    @click="openEditRepos(u)"
+                  >
+                    <Pencil class="h-4 w-4" />
+                  </Button>
+                </div>
               </div>
             </div>
           </CardContent>
         </Card>
       </TabsContent>
     </Tabs>
+
+    <!-- ── Edit Shared Repos Dialog ── -->
+    <Dialog v-model:open="showEditReposDialog">
+      <DialogContent class="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Repositories bearbeiten</DialogTitle>
+          <DialogDescription>
+            Zugriff für <span class="font-medium">{{ editingUser?.display_name }}</span> verwalten.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div class="space-y-3 py-2">
+          <div v-if="repos.length === 0" class="text-sm text-muted-foreground text-center py-4">
+            Keine Repositories verbunden. Bitte zuerst Repositories in den Einstellungen hinzufügen.
+          </div>
+          <div v-else class="space-y-1.5 max-h-60 overflow-y-auto">
+            <label
+              v-for="repo in repos"
+              :key="repo.id"
+              class="flex items-center gap-2 rounded-md border px-3 py-2 cursor-pointer hover:bg-accent text-sm"
+              :class="editRepoIds.includes(repo.id) ? 'border-primary bg-primary/5' : ''"
+            >
+              <input
+                type="checkbox"
+                :value="repo.id"
+                v-model="editRepoIds"
+                class="rounded"
+              />
+              <div class="flex-1 min-w-0">
+                <span class="font-medium">{{ repo.display_name }}</span>
+                <span class="text-xs text-muted-foreground ml-1.5">{{ repo.repo_full_name }}</span>
+              </div>
+            </label>
+          </div>
+
+          <p v-if="editReposError" class="text-sm text-destructive">{{ editReposError }}</p>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" @click="showEditReposDialog = false" :disabled="editReposSaving">
+            Abbrechen
+          </Button>
+          <Button class="gap-2" @click="saveEditRepos" :disabled="editReposSaving">
+            <Loader2 v-if="editReposSaving" class="h-4 w-4 animate-spin" />
+            <Save v-else class="h-4 w-4" />
+            Speichern
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </main>
 </template>

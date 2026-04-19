@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Github, Settings, MessageSquare, LayoutDashboard, Menu, LogOut, Shield, User } from "lucide-vue-next";
+import { Github, Settings, MessageSquare, LayoutDashboard, Menu, LogOut, Shield, User, Zap } from "lucide-vue-next";
 
 // Initialise theme on app load so the .dark class is applied early
 useTheme();
@@ -20,8 +20,9 @@ const navItems = computed(() => {
     { to: "/chat", label: "Chat", icon: MessageSquare },
   ];
 
-  // Viewers can't manage repos/settings
+  // Viewers can't manage repos/settings/automations
   if (!isViewer.value) {
+    items.push({ to: "/automations", label: "Automationen", icon: Zap });
     items.push({ to: "/settings", label: "Einstellungen", icon: Settings });
   }
 
@@ -57,7 +58,7 @@ const navItems = computed(() => {
               :key="item.to"
               :to="item.to"
               class="flex items-center gap-2 rounded-md px-3 py-2 text-sm hover:bg-accent"
-              :class="route.path === item.to ? 'bg-accent font-medium' : ''"
+              :class="(item.to === '/' ? route.path === '/' : route.path === item.to || route.path.startsWith(item.to + '/')) ? 'bg-accent font-medium' : ''"
               @click="mobileOpen = false"
             >
               <component :is="item.icon" class="h-4 w-4" />
@@ -80,7 +81,7 @@ const navItems = computed(() => {
           :key="item.to"
           :to="item.to"
           class="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors hover:bg-accent"
-          :class="route.path === item.to ? 'bg-accent font-medium' : 'text-muted-foreground'"
+          :class="(item.to === '/' ? route.path === '/' : route.path === item.to || route.path.startsWith(item.to + '/')) ? 'bg-accent font-medium' : 'text-muted-foreground'"
         >
           <component :is="item.icon" class="h-4 w-4" />
           {{ item.label }}

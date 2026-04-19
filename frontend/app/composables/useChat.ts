@@ -1,37 +1,64 @@
-import type { ChatMessage, ToolCallState, SSEEvent } from "~/types/chat";
+import type { ChatMessage, ActiveRun, StreamState } from "~/types/chat";
 
 export interface ChatListItem {
   chat_id: string;
   title: string;
   repo: string;
+  model?: string | null;
   updated_at: string;
+  /** Set when the server has a live run for this chat (multi-chat in parallel). */
+  active_run?: ActiveRun | null;
 }
 
+/** Mint a chat id in the same short format the backend uses. */
+function generateChatId(): string {
+  return crypto.randomUUID().slice(0, 12);
+}
+
+/**
+ * Public chat API for components. Delegates streaming to useChatStreamManager;
+ * this composable's job is to expose the currently visible chat (messages,
+ * isStreaming) plus the list/load/delete operations.
+ */
 export function useChat() {
-  const { apiBase, apiFetch } = useApi();
+  const { apiFetch } = useApi();
+  const streams = useChatStreamManager();
 
-  const messages = useState<ChatMessage[]>("chatMessages", () => []);
-  const isStreaming = ref(false);
-  const currentToolCalls = ref<ToolCallState[]>([]);
-  const error = ref<string | null>(null);
-
-  // Current chat session
+  // Which chat is currently shown. The URL (`/chat/:chatId`) is the source of
+  // truth — `pages/chat/[[chatId]].vue` keeps this in sync so a page refresh
+  // lands back on the same chat and re-attaches any live run.
   const activeChatId = useState<string | null>("activeChatId", () => null);
 
-  // Chat history list
   const chatList = useState<ChatListItem[]>("chatList", () => []);
   const chatListLoading = ref(false);
 
-  // Selected repo & model
+  // Selections applied to the NEXT message sent.
   const selectedRepo = useState<string>("selectedRepo", () => "");
   const selectedModel = useState<string>("selectedModel", () => "");
 
-  // ── Fetch chat list ───────────────────────────────────────────────────
+  const messages = computed<ChatMessage[]>({
+    get: () => streams.getMessages(activeChatId.value),
+    set: (next) => {
+      if (activeChatId.value) streams.setMessages(activeChatId.value, next);
+    },
+  });
+
+  const currentStreamState = computed<StreamState>(() =>
+    streams.getState(activeChatId.value),
+  );
+  const isStreaming = computed(() => streams.isStreaming(activeChatId.value));
+  const isReconnecting = computed(
+    () => currentStreamState.value.phase === "reconnecting",
+  );
+  const error = computed(() => currentStreamState.value.error);
 
   async function fetchChatList() {
     chatListLoading.value = true;
     try {
       chatList.value = await apiFetch<ChatListItem[]>("/api/chats");
+      // Intentional: no eager stream attach here. The sidebar shows activity
+      // via `active_run`; we attach lazily on loadChat so the assistant
+      // placeholder lines up with the hydrated history.
     } catch {
       chatList.value = [];
     } finally {
@@ -39,7 +66,25 @@ export function useChat() {
     }
   }
 
-  // ── Load existing chat ────────────────────────────────────────────────
+  /**
+   * Sidebar indicator: either we're streaming locally, or the list response
+   * flagged a server-side live run on this chat.
+   *
+   * Local stream state is authoritative when present: `active_run` on the
+   * chatList item is a server snapshot taken at list-fetch time, so once we
+   * observe a terminal phase locally we must ignore the stale flag (otherwise
+   * the spinner keeps spinning until the next fetchChatList / page reload).
+   */
+  function chatHasActivity(chatId: string): boolean {
+    const phase = streams.getState(chatId).phase;
+    if (phase === "streaming" || phase === "reconnecting") return true;
+    // Any non-idle phase means we have local truth — the run terminated.
+    if (phase !== "idle") return false;
+    // No local knowledge (e.g. run started in another tab): fall back to the
+    // server's active_run hint from the last list fetch.
+    const item = chatList.value.find((c) => c.chat_id === chatId);
+    return !!item?.active_run?.run_id;
+  }
 
   async function loadChat(chatId: string) {
     try {
@@ -47,9 +92,11 @@ export function useChat() {
         chat_id: string;
         title: string;
         repo: string;
+        model?: string | null;
         messages: {
           role: string;
           content: string;
+          status?: string;
           tool_calls?: {
             name: string;
             id: string;
@@ -58,210 +105,114 @@ export function useChat() {
             status: string;
           }[];
         }[];
+        active_run?: ActiveRun | null;
       }>(`/api/chats/${chatId}`);
 
       activeChatId.value = chatId;
       if (data.repo) selectedRepo.value = data.repo;
-      messages.value = data.messages.map((m) => ({
-        role: m.role as "user" | "assistant",
-        content: m.content,
-        // Restore tool calls from DB if present
-        ...(m.tool_calls?.length
-          ? {
-              toolCalls: m.tool_calls.map((tc) => ({
-                name: tc.name,
-                input: tc.input || {},
-                output: tc.output,
-                status: (tc.status || "done") as "running" | "done" | "error",
-              })),
-            }
-          : {}),
-      }));
-    } catch {
-      error.value = "Chat konnte nicht geladen werden.";
+      if (data.model) selectedModel.value = data.model;
+
+      // Only repopulate messages if we don't already have a fresher in-memory
+      // copy (a stream is still accumulating tokens for this chat).
+      const state = streams.getState(chatId);
+      const existingMsgs = streams.getMessages(chatId);
+      const streamInFlight =
+        state.phase === "streaming" || state.phase === "reconnecting";
+
+      if (!streamInFlight || existingMsgs.length === 0) {
+        const hydrated: ChatMessage[] = data.messages.map((m) => ({
+          role: m.role as "user" | "assistant",
+          content: m.content,
+          status: (m.status as ChatMessage["status"]) || "complete",
+          ...(m.tool_calls?.length
+            ? {
+                toolCalls: m.tool_calls.map((tc) => ({
+                  name: tc.name,
+                  input: tc.input || {},
+                  output: tc.output,
+                  status: (tc.status || "done") as "running" | "done" | "error",
+                })),
+              }
+            : {}),
+        }));
+        streams.setMessages(chatId, hydrated);
+      }
+
+      if (data.active_run?.run_id && !streamInFlight) {
+        await streams.attach(chatId, data.active_run.run_id);
+      }
+    } catch (err) {
+      console.error("Chat konnte nicht geladen werden:", chatId);
+      // Re-throw so route-level callers (pages/chat/[[chatId]].vue) can
+      // redirect away from an invalid deep link.
+      throw err;
     }
   }
 
-  // ── Start new chat ────────────────────────────────────────────────────
-
   function newChat() {
     activeChatId.value = null;
-    messages.value = [];
-    error.value = null;
   }
-
-  // ── Delete chat ───────────────────────────────────────────────────────
 
   async function deleteChat(chatId: string) {
     try {
       await apiFetch(`/api/chats/${chatId}`, { method: "DELETE" });
       chatList.value = chatList.value.filter((c) => c.chat_id !== chatId);
-      if (activeChatId.value === chatId) {
-        newChat();
-      }
+      streams.clearChat(chatId);
+      if (activeChatId.value === chatId) newChat();
     } catch {
       // ignore
     }
   }
 
-  // ── Send message ──────────────────────────────────────────────────────
-
   async function sendMessage(query: string) {
-    if (!query.trim() || isStreaming.value) return;
+    if (!query.trim()) return;
+    if (isStreaming.value) return;
 
-    error.value = null;
-    isStreaming.value = true;
-    currentToolCalls.value = [];
-
-    messages.value.push({ role: "user", content: query });
-
-    const assistantMsg: ChatMessage = {
-      role: "assistant",
-      content: "",
-      toolCalls: [],
-    };
-    messages.value.push(assistantMsg);
-    const assistantIdx = messages.value.length - 1;
-
-    try {
-      const history = messages.value
-        .slice(0, -2)
-        .map((m) => ({ role: m.role, content: m.content }));
-
-      const response = await fetch(`${apiBase}/api/chat`, {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          query,
-          chat_history: history,
-          chat_id: activeChatId.value || undefined,
-          repo: selectedRepo.value || undefined,
-          model: selectedModel.value || undefined,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      // Capture chat_id from response header (new chats)
-      const responseChatId = response.headers.get("X-Chat-Id");
-      if (responseChatId) {
-        activeChatId.value = responseChatId;
-      }
-
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error("No response body");
-
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const jsonStr = line.slice(6).trim();
-          if (!jsonStr) continue;
-
-          try {
-            const event: SSEEvent = JSON.parse(jsonStr);
-            processEvent(event, assistantIdx);
-          } catch {
-            // Ignore malformed lines
-          }
-        }
-      }
-
-      // Refresh chat list after a successful message
-      fetchChatList();
-    } catch (e: any) {
-      error.value = e.message || "Verbindungsfehler";
-      if (!messages.value[assistantIdx]?.content) {
-        messages.value.splice(assistantIdx, 1);
-      }
-    } finally {
-      isStreaming.value = false;
-      currentToolCalls.value = [];
+    // Mint a chat id locally for new chats so the UI and Mongo agree on the
+    // id from the first keystroke — no bucket-migration dance needed.
+    let chatId = activeChatId.value;
+    if (!chatId) {
+      chatId = generateChatId();
+      activeChatId.value = chatId;
     }
+
+    const history = streams
+      .getMessages(chatId)
+      .map((m) => ({ role: m.role, content: m.content }));
+
+    await streams.startNew(chatId, {
+      query,
+      chatHistory: history,
+      repo: selectedRepo.value || undefined,
+      model: selectedModel.value || undefined,
+    });
+
+    // Refresh the sidebar so the new chat appears (or moves to top).
+    fetchChatList();
   }
 
-  function processEvent(event: SSEEvent, assistantIdx: number) {
-    const msg = messages.value[assistantIdx];
-    if (!msg) return;
-
-    switch (event.type) {
-      case "tool_call": {
-        const tc: ToolCallState = {
-          name: event.name || "unknown",
-          input: event.input || {},
-          status: "running",
-        };
-        currentToolCalls.value.push(tc);
-        if (!msg.toolCalls) msg.toolCalls = [];
-        msg.toolCalls.push(tc);
-        break;
-      }
-
-      case "tool_result": {
-        const running = currentToolCalls.value.find(
-          (t) => t.name === event.name && t.status === "running"
-        );
-        if (running) {
-          running.output = event.output;
-          running.status = "done";
-        }
-        break;
-      }
-
-      case "token":
-        if (event.content) {
-          msg.content += event.content;
-        }
-        break;
-
-      case "status":
-        if (event.status === "completed" && event.response) {
-          if (!msg.content) {
-            msg.content = event.response;
-          }
-        }
-        if (event.status === "error") {
-          error.value = event.error || "Agent-Fehler";
-        }
-        break;
-    }
-  }
-
-  function clearMessages() {
-    activeChatId.value = null;
-    messages.value = [];
+  async function cancelCurrent() {
+    if (!activeChatId.value) return;
+    await streams.cancel(activeChatId.value);
   }
 
   return {
     messages,
     isStreaming,
-    currentToolCalls,
+    isReconnecting,
     error,
     activeChatId,
+    currentStreamState,
     chatList,
     chatListLoading,
     selectedRepo,
     selectedModel,
     sendMessage,
-    clearMessages,
+    cancelCurrent,
     fetchChatList,
     loadChat,
     newChat,
     deleteChat,
+    chatHasActivity,
   };
 }

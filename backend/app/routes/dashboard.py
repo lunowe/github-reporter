@@ -4,13 +4,12 @@ GET /api/dashboard/summary — cached repo summary, no agent involved.
 """
 
 import logging
-from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth import get_activated_user
-from app.config import get_settings, Settings
-from app.services.github_service import GitHubService
+from app.services.repo_access import get_authorized_repo
+from app.services.github_service import GitHubService, fetch_rate_limit
 from app.services.token_resolver import resolve_github_token
 from app.services.dashboard_cache import get_cached_summary, set_cached_summary
 
@@ -29,9 +28,14 @@ async def repo_summary(
     Return repo summary stats.
     Serves from DB cache (5min TTL) unless refresh=true.
     """
+    if not await get_authorized_repo(user, repo):
+        raise HTTPException(status_code=403, detail="Kein Zugriff auf dieses Repository.")
+
+    cache_scope = str(user["_id"])
+
     # Try cache first
     if not refresh:
-        cached = await get_cached_summary(repo)
+        cached = await get_cached_summary(repo, scope=cache_scope)
         if cached:
             logger.info("Dashboard cache hit for %s", repo)
             return {"source": "cache", "summary": cached}
@@ -57,7 +61,7 @@ async def repo_summary(
         raise HTTPException(status_code=502, detail=f"GitHub API Fehler: {e}")
 
     # Store in cache
-    await set_cached_summary(repo, summary)
+    await set_cached_summary(repo, summary, scope=cache_scope)
 
     return {"source": "fresh", "summary": summary}
 
@@ -72,6 +76,9 @@ async def repo_details(
     contributors, recent activity. Each section is fetched independently
     so a single slow/hanging call doesn't block everything.
     """
+    if not await get_authorized_repo(user, repo):
+        raise HTTPException(status_code=403, detail="Kein Zugriff auf dieses Repository.")
+
     import asyncio
     from concurrent.futures import ThreadPoolExecutor
 
@@ -109,3 +116,35 @@ async def repo_details(
         "contributors": contributors or [],
         "recent_activity": recent or [],
     }
+
+
+@router.get("/rate-limit")
+async def rate_limit(
+    user: dict = Depends(get_activated_user),
+):
+    """
+    Return the authenticated user's current GitHub API quota.
+
+    Uses GitHub's /rate_limit meta-endpoint, which does NOT consume quota
+    itself, so this is safe to poll at a regular interval from the UI.
+    Returns the core/search/graphql buckets plus a fetched_at timestamp.
+    """
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    token = await resolve_github_token(user)
+
+    loop = asyncio.get_event_loop()
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        info = await asyncio.wait_for(
+            loop.run_in_executor(executor, fetch_rate_limit, token),
+            timeout=10,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="GitHub API timeout — bitte erneut versuchen")
+    except Exception as e:
+        logger.warning("Rate limit fetch failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"GitHub API Fehler: {e}")
+
+    return info

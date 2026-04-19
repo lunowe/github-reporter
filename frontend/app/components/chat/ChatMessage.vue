@@ -38,6 +38,10 @@ const TOOL_LABELS: Record<string, string> = {
   compare_branches: "Branches vergleichen",
   get_contributors: "Contributors abrufen",
   search_code: "Code durchsuchen",
+  list_container_packages: "Container-Images auflisten",
+  get_container_image_tags: "Image-Tags abrufen",
+  get_container_image_details: "Image-Details abrufen",
+  find_image_for_commit: "Image für Commit finden",
 };
 
 // True when the assistant message is still empty (waiting for first token or tool call)
@@ -143,6 +147,34 @@ const isThinkingAfterTools = computed(() => {
         class="rounded-lg px-4 py-2.5 markdown text-foreground/90"
         v-html="renderedContent"
       />
+
+      <!-- Status badge — only shown when the message wasn't a clean complete -->
+      <div
+        v-if="!isUser && message.status && message.status !== 'complete'"
+        class="flex items-center gap-1.5 px-1"
+      >
+        <Badge
+          v-if="message.status === 'partial'"
+          variant="outline"
+          class="text-[10px] px-1.5 py-0 border-amber-500/40 text-amber-600"
+        >
+          Unvollständig
+        </Badge>
+        <Badge
+          v-else-if="message.status === 'cancelled'"
+          variant="outline"
+          class="text-[10px] px-1.5 py-0"
+        >
+          Abgebrochen
+        </Badge>
+        <Badge
+          v-else-if="message.status === 'error'"
+          variant="destructive"
+          class="text-[10px] px-1.5 py-0"
+        >
+          Fehler
+        </Badge>
+      </div>
     </div>
 
     <!-- User avatar -->

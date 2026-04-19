@@ -1,15 +1,18 @@
 # app/services/agent_runner.py
 """
-Single-agent runner with SSE streaming.
-Matches chatforen's _stream_chat / _stream_agent_events / _process_stream_event pattern.
+Single-agent runner that yields typed (event_type, data) tuples.
+
+Formatting for the wire (SSE) happens at the HTTP boundary; the runner itself
+stays transport-agnostic so stream_manager can shove these events through Redis
+without re-parsing.
 """
 
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
 from datetime import date
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 
 from llama_index.core.agent.workflow import (
     FunctionAgent,
@@ -24,7 +27,7 @@ from llama_index.core.memory import Memory
 from app.services.llm_factory import LLMConfig, build_llm
 from app.services.github_service import GitHubService
 from app.tools.registry import build_all_tools
-from app.utils import trunc, sse_event, safe_serialize_kwargs
+from app.utils import trunc, safe_serialize_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -92,11 +95,19 @@ class AgentRunner:
         self,
         query: str,
         chat_history: list[dict] | None = None,
-    ) -> AsyncGenerator[str, None]:
-        """Run the agent and yield SSE-formatted events."""
+        cancel_event: Optional[asyncio.Event] = None,
+    ) -> AsyncGenerator[tuple[str, dict], None]:
+        """
+        Run the agent and yield (event_type, data) tuples.
+
+        Event types: "status", "token", "tool_call", "tool_result".
+
+        If `cancel_event` is set mid-stream we break out of the loop and ask the
+        workflow handler to cancel so no more tool calls fire.
+        """
         logger.info("Agent run: query=%r", query)
 
-        yield sse_event({"type": "status", "status": "started"})
+        yield "status", {"status": "started"}
 
         llama_messages: list[ChatMessage] = []
         if chat_history:
@@ -113,17 +124,17 @@ class AgentRunner:
             chat_history=llama_messages,
         )
 
-        final_response = ""
+        handler = self.agent.run(user_msg=query, memory=memory)
 
         try:
-            handler = self.agent.run(user_msg=query, memory=memory)
-
             async for event in handler.stream_events():
+                if cancel_event is not None and cancel_event.is_set():
+                    break
+
                 if isinstance(event, AgentStream):
                     delta = event.delta or ""
                     if delta:
-                        final_response += delta
-                        yield sse_event({"type": "token", "content": delta})
+                        yield "token", {"content": delta}
 
                 elif isinstance(event, AgentOutput):
                     if event.tool_calls:
@@ -131,33 +142,75 @@ class AgentRunner:
 
                 elif isinstance(event, ToolCall):
                     logger.info("ToolCall: %s", event.tool_name)
-                    yield sse_event({
-                        "type": "tool_call",
+                    yield "tool_call", {
                         "name": event.tool_name,
                         "id": event.tool_id,
                         "input": safe_serialize_kwargs(event.tool_kwargs),
-                    })
+                    }
 
                 elif isinstance(event, ToolCallResult):
                     output_str = str(event.tool_output.content) if event.tool_output else ""
                     logger.info("ToolCallResult: %s -> %d chars", event.tool_name, len(output_str))
-                    yield sse_event({
-                        "type": "tool_result",
+                    yield "tool_result", {
                         "name": event.tool_name,
                         "id": event.tool_id,
                         "output": trunc(output_str, 2000),
-                    })
+                    }
+        finally:
+            # If we're bailing early (cancel or exception), try to stop the handler
+            # so no more tool calls fire. LlamaIndex's WorkflowHandler supports
+            # cancellation; best-effort, since different versions expose different APIs.
+            try:
+                if hasattr(handler, "cancel_run"):
+                    cancel_result = handler.cancel_run()
+                    if asyncio.iscoroutine(cancel_result):
+                        await cancel_result
+                elif hasattr(handler, "cancel"):
+                    handler.cancel()
+            except Exception:
+                logger.debug("Workflow handler cancel failed", exc_info=True)
 
-            yield sse_event({
-                "type": "status",
-                "status": "completed",
-                "response": final_response,
-            })
+    async def run_once(
+        self,
+        query: str,
+        chat_history: list[dict] | None = None,
+    ) -> str:
+        """
+        Run the agent non-streaming and return the final response text.
+        Used by automations and other non-interactive callers.
+        Raises on failure so the caller can log/store the error.
+        """
+        logger.info("Agent run_once: query=%r", query)
 
-        except Exception as e:
-            logger.exception("Agent execution failed")
-            yield sse_event({
-                "type": "status",
-                "status": "error",
-                "error": str(e),
-            })
+        llama_messages: list[ChatMessage] = []
+        if chat_history:
+            for msg in chat_history:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if role in ("user", "assistant"):
+                    llama_messages.append(ChatMessage(role=role, content=content))
+
+        memory = Memory.from_defaults(
+            token_limit=200000,
+            chat_history=llama_messages,
+        )
+
+        final_response = ""
+
+        handler = self.agent.run(user_msg=query, memory=memory)
+        async for event in handler.stream_events():
+            if isinstance(event, AgentStream):
+                delta = event.delta or ""
+                if delta:
+                    final_response += delta
+            elif isinstance(event, ToolCall):
+                logger.info("ToolCall: %s", event.tool_name)
+            elif isinstance(event, ToolCallResult):
+                output_str = str(event.tool_output.content) if event.tool_output else ""
+                logger.info(
+                    "ToolCallResult: %s -> %d chars",
+                    event.tool_name,
+                    len(output_str),
+                )
+
+        return final_response

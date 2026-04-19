@@ -15,9 +15,8 @@ const {
   activeChatId,
   selectedRepo,
   fetchChatList,
-  loadChat,
-  newChat,
   deleteChat,
+  chatHasActivity,
 } = useChat();
 
 const { repos, fetchRepos } = useRepos();
@@ -51,7 +50,11 @@ onMounted(() => {
 
 function newChatForRepo(repo: string) {
   selectedRepo.value = repo;
-  newChat();
+  navigateTo("/chat");
+}
+
+function openChat(chatId: string) {
+  navigateTo(`/chat/${chatId}`);
 }
 
 function formatRelativeTime(dateStr: string) {
@@ -236,8 +239,13 @@ function confirmDelete() {
                 :class="
                   activeChatId === chat.chat_id ? 'bg-accent font-medium' : ''
                 "
-                @click="loadChat(chat.chat_id)"
+                @click="openChat(chat.chat_id)"
               >
+                <!-- Streaming indicator: shown when this chat has a live (or server-side active) run -->
+                <Loader2
+                  v-if="chatHasActivity(chat.chat_id)"
+                  class="h-3 w-3 animate-spin text-primary shrink-0"
+                />
                 <span class="truncate flex-1 min-w-0">{{ chat.title }}</span>
                 <div class="shrink-0 ml-1 relative">
                   <span class="text-[11px] text-muted-foreground tabular-nums transition-opacity group-hover:opacity-0">

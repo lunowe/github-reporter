@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { GitBranch, GitFork } from "lucide-vue-next";
+import { GitBranch, GitFork, WifiOff, XCircle } from "lucide-vue-next";
 
 const {
   messages,
   isStreaming,
+  isReconnecting,
   error,
+  currentStreamState,
   selectedRepo,
   sendMessage,
-  clearMessages,
+  cancelCurrent,
 } = useChat();
 const { repos } = useRepos();
 
@@ -142,6 +144,23 @@ function handleSuggestion(question: string) {
           data-chat-message
         />
 
+        <!-- Reconnecting banner — shown while the stream manager retries -->
+        <Alert
+          v-if="isReconnecting"
+          variant="default"
+          class="max-w-3xl mx-auto border-amber-500/40 bg-amber-500/5"
+        >
+          <WifiOff class="h-4 w-4" />
+          <AlertTitle>Verbindung verloren</AlertTitle>
+          <AlertDescription>
+            Verbindung wird wiederhergestellt
+            <span v-if="currentStreamState.reconnectAttempt > 1">
+              (Versuch {{ currentStreamState.reconnectAttempt }})
+            </span>
+            …
+          </AlertDescription>
+        </Alert>
+
         <!-- Error -->
         <Alert v-if="error" variant="destructive" class="max-w-3xl mx-auto">
           <AlertTitle>Fehler</AlertTitle>
@@ -149,6 +168,22 @@ function handleSuggestion(question: string) {
         </Alert>
       </div>
     </ScrollArea>
+
+    <!-- Cancel in-flight response -->
+    <div
+      v-if="isStreaming && !isEmpty"
+      class="border-t px-4 py-2 flex justify-center"
+    >
+      <Button
+        variant="ghost"
+        size="sm"
+        class="h-7 gap-1.5 text-xs text-muted-foreground"
+        @click="cancelCurrent"
+      >
+        <XCircle class="h-3.5 w-3.5" />
+        Antwort stoppen
+      </Button>
+    </div>
 
     <!-- Input (pinned to bottom, only when chatting) -->
     <ChatInput v-if="!isEmpty" :is-streaming="isStreaming" @send="sendMessage" />
