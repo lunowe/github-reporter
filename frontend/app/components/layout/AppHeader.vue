@@ -18,11 +18,11 @@ const navItems = computed(() => {
   const items = [
     { to: "/", label: "Dashboard", icon: LayoutDashboard },
     { to: "/chat", label: "Chat", icon: MessageSquare },
+    { to: "/automations", label: "Automationen", icon: Zap },
   ];
 
-  // Viewers can't manage repos/settings/automations
+  // Viewers can't manage repos/settings
   if (!isViewer.value) {
-    items.push({ to: "/automations", label: "Automationen", icon: Zap });
     items.push({ to: "/settings", label: "Einstellungen", icon: Settings });
   }
 
