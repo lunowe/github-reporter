@@ -1,252 +1,163 @@
 # GitHub Reporter
 
-An AI-powered tool that gives project managers and team leads a clear, real-time overview of their GitHub repositories. Ask questions in natural language and get intelligent answers based on live repository data — commits, pull requests, issues, CI/CD status, code browsing, and more.
+An AI assistant for project managers and team leads who need a clear view of what's happening across their GitHub repositories — without reading every PR, commit, or pipeline run themselves. Ask in natural language, get answers grounded in live repository data.
 
-Built with a **FastAPI** backend, **Nuxt 4** frontend, and **LlamaIndex agents** that support multiple LLM providers (Google Gemini, OpenAI, Anthropic Claude).
+Built with a **FastAPI** backend, **Nuxt 4** frontend, and **LlamaIndex** agents that can talk to Google Gemini, OpenAI, or Anthropic Claude.
 
-> **Note:** The UI and agent responses are in **German**, designed for German-speaking teams.
+> The UI and agent responses are in **German** — the target audience is German-speaking PMs and team leads.
 
 ---
 
-## Features
+## Live deployment
 
-- **Natural Language Chat** — Ask questions about your repositories and get AI-generated answers grounded in real GitHub data
-- **Multi-Repo Support** — Connect multiple repositories and switch between them
-- **Dashboard** — At-a-glance overview with quick stats for all connected repos
-- **Live Streaming** — Responses stream in real-time via SSE, including tool call transparency
-- **Multiple LLM Providers** — Choose between Google Gemini, OpenAI GPT, or Anthropic Claude
-- **GitHub OAuth** — Secure authentication via GitHub Apps (no personal tokens needed)
-- **Chat History** — Conversations are persisted and searchable
+The app is currently hosted on **Railway** behind an invite-only access wall. Two ways to get in:
 
-### What the Agent Can Do
+- **Access code** — single- or multi-use code issued by the admin. Redeem under `/activate` after GitHub login.
+- **Email invite** — admin sends a magic-link invite scoped to specific repos. Creates a "viewer" account with read-only access to the assigned repos (no GitHub auth required).
 
-| Capability | Description |
+If you need a code or invite, ping me directly.
+
+---
+
+## What it can do today
+
+### Chat with the agent
+- Natural-language questions, answered with live data fetched through tools
+- Real-time SSE streaming with visible tool calls (you see what the agent is doing)
+- Durable runs backed by Redis — reconnect after a refresh and keep streaming
+- Chat history is persisted and searchable per user
+
+### Agent capabilities (tools)
+
+| Area | Tools |
 |---|---|
-| **Commits** | List, filter, and analyze recent commits by date, author, or branch |
-| **Pull Requests** | Browse open/closed PRs with full detail views |
-| **Issues** | List and inspect issues with labels, assignees, and comments |
-| **CI/CD** | Check GitHub Actions workflow run status |
-| **Code Browsing** | Browse directories and read file contents directly |
-| **Branch Comparison** | Compare two branches (ahead/behind, changed files) |
-| **Contributors** | View top contributors and their activity |
-| **Search** | Full-text search across code and issues |
-| **Repo Summary** | Quick overview — stars, branches, languages, latest release |
+| **Repo overview** | summary, contributors, languages, latest release |
+| **Commits** | list/filter by date, author, branch |
+| **Pull requests** | open/closed PRs with full detail views |
+| **Issues** | list, filter, inspect with labels, assignees, comments |
+| **CI/CD** | GitHub Actions workflow run status |
+| **Code browsing** | walk directories, read files |
+| **Branch comparison** | ahead/behind, changed files between two branches |
+| **Search** | full-text across code and issues |
+| **Containers** | GHCR images, tags, and which commit produced an image |
+
+### Beyond chat
+- **Multi-repo dashboard** — cached at-a-glance stats per connected repo
+- **Automations** — chained-prompt workflows on a cron schedule; results delivered via SMTP email. Steps can reference earlier step outputs with `{{stepN.output}}` for templated reports.
+- **Admin tools** — user management, repo-scoped viewer invites, access code issuance
+- **Multi-LLM** — switch provider (Gemini / OpenAI / Anthropic) per session
 
 ---
 
-## Tech Stack
+## What it can't do (yet)
 
-| Layer | Technology |
-|---|---|
-| **Frontend** | Nuxt 4 (Vue 3), TypeScript, TailwindCSS, shadcn-nuxt, Bun |
-| **Backend** | FastAPI, Python 3.11, LlamaIndex, PyGithub |
-| **Database** | MongoDB (via Motor async driver) |
-| **LLM Providers** | Google Gemini, OpenAI, Anthropic Claude |
-| **Infrastructure** | Docker, docker-compose |
-
----
-
-## Prerequisites
-
-- **Docker & docker-compose** (recommended for quickest setup)
-- A [**GitHub App**](https://github.com/settings/apps) with OAuth enabled
-- At least one **LLM API key** (Gemini, OpenAI, or Anthropic)
-
-For local development without Docker:
-- Python 3.11+
-- Node.js 22+ or [Bun](https://bun.sh)
+- **Read-only on GitHub.** The agent doesn't open issues, comment on PRs, merge, or push.
+- **German only.** UI strings and agent prompt are German. No i18n layer yet.
+- **Email-only notifications.** No Slack, Teams, Discord, or webhook delivery for automations.
+- **Single admin.** Admin is identified by one configured GitHub username — no roles, no orgs, no teams.
+- **Polling, not events.** No GitHub webhook ingestion; everything is fetched on demand (cached where it makes sense).
+- **No conversation export.** Can't share, fork, or export a chat as Markdown/PDF.
+- **No code-aware retrieval.** The agent reads files on demand but doesn't index/embed the repo, so "semantic" code search across a large repo is limited to GitHub's own search.
+- **Single-tenant.** Designed for one team / one admin, not as a multi-tenant SaaS.
 
 ---
 
-## Quick Start (Docker)
+## Possible improvements
 
-### 1. Clone the repository
+A non-exhaustive backlog, in rough priority order:
 
-```bash
-git clone https://github.com/your-org/github-reporter.git
-cd github-reporter
-```
+- English / i18n switch
+- Slack & Teams delivery for automations
+- GitHub webhooks → push-style "what changed since you last looked" digests
+- Write actions: comment on PR, open issue, request review (gated behind explicit user opt-in)
+- Org/team RBAC instead of single-admin
+- Repo-wide semantic search (embedded code index) for "where does X live?" questions
+- Chat export (Markdown / PDF) and shareable read-only links
+- Diff-style release summaries between two tags
+- Run-cost visibility per chat (LLM token spend)
 
-### 2. Create a GitHub App
+---
 
-1. Go to [GitHub Settings > Developer settings > GitHub Apps](https://github.com/settings/apps)
-2. Create a new GitHub App with:
-   - **Callback URL:** `http://localhost:3200/auth/callback`
-   - **Permissions:** Repository contents (read), Issues (read), Pull requests (read), Actions (read), Metadata (read)
-3. Note the **Client ID** and generate a **Client Secret**
-4. Install the App on the repositories you want to analyze
+## Local setup
 
-### 3. Configure environment variables
+The production deployment runs on Railway; for local development the simplest path is Docker.
+
+**Prerequisites**
+- Docker + docker-compose
+- A [GitHub App](https://github.com/settings/apps) (OAuth enabled, installed on the repos you want to query)
+- At least one LLM API key (Gemini, OpenAI, or Anthropic)
+- *(Optional)* SMTP credentials if you want automations to send email
+
+**1. Configure**
 
 ```bash
 cp backend/.env.example backend/.env
 ```
 
-Edit `backend/.env` and fill in your values:
+Fill in at minimum:
 
 ```env
-# GitHub App (required)
-GITHUB_APP_CLIENT_ID=your_client_id
-GITHUB_APP_CLIENT_SECRET=your_client_secret
+GITHUB_APP_CLIENT_ID=...
+GITHUB_APP_CLIENT_SECRET=...
 GITHUB_APP_SLUG=your-app-slug
-
-# Session secret (required — generate a secure one)
-# python -c "import secrets; print(secrets.token_urlsafe(32))"
-SESSION_SECRET=change-me-in-production
-
-# Frontend URL for OAuth redirect
+ADMIN_GITHUB_LOGIN=your-github-username   # you become the admin
+SESSION_SECRET=...                        # python -c "import secrets; print(secrets.token_urlsafe(32))"
 APP_URL=http://localhost:3200
-
-# LLM API keys (set at least one)
-GOOGLE_API_KEY=
-OPENAI_API_KEY=
-ANTHROPIC_API_KEY=
-
-# LLM defaults
-DEFAULT_LLM_PROVIDER=gemini
-DEFAULT_LLM_MODEL=gemini-3-flash-preview
-
-# MongoDB (overridden by docker-compose, keep default for local dev)
-MONGODB_URL=mongodb://localhost:27017
-MONGODB_DB_NAME=github_reporter
+GOOGLE_API_KEY=...                        # or OPENAI_API_KEY / ANTHROPIC_API_KEY
 ```
 
-### 4. Start the stack
+GitHub App callback URL: `http://localhost:3200/auth/callback`.
+Permissions needed: Contents, Issues, Pull requests, Actions, Metadata (all read-only).
+
+**2. Run**
 
 ```bash
 docker-compose up --build
 ```
 
-### 5. Open the app
+Brings up MongoDB, Redis, the FastAPI backend, and the Nuxt frontend.
 
-Navigate to **http://localhost:3200**, log in with GitHub, connect a repo, and start chatting.
+**3. Use**
 
-### Default Ports
+Open **http://localhost:3200**, sign in with GitHub. Since you set `ADMIN_GITHUB_LOGIN` to your own username, your account auto-activates — no access code needed. Connect a repo from the settings page and start chatting.
 
-| Service | Port | Override Variable |
+### Default ports
+
+| Service | Port | Override |
 |---|---|---|
 | Frontend | `3200` | `GHR_FRONTEND_PORT` |
-| Backend API | `8200` | `GHR_BACKEND_PORT` |
+| Backend | `8200` | `GHR_BACKEND_PORT` |
 | MongoDB | `27018` | `GHR_MONGO_PORT` |
 
-Override ports via environment variables:
+### Without Docker
 
 ```bash
-GHR_FRONTEND_PORT=4000 GHR_BACKEND_PORT=9000 docker-compose up --build
-```
-
----
-
-## Local Development (without Docker)
-
-### Backend
-
-```bash
-cd backend
-python -m venv .venv
-source .venv/bin/activate    # Windows: .venv\Scripts\activate
+# Backend
+cd backend && python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+# Requires MongoDB and Redis running locally
 
-# Make sure MongoDB is running (e.g. via Docker):
-# docker run -d -p 27017:27017 mongo:8.0
-
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# Frontend
+cd frontend && bun install && bun run dev
 ```
 
-The API will be available at `http://localhost:8000` with interactive docs at `/docs`.
-
-### Frontend
-
-```bash
-cd frontend
-bun install        # or: npm install
-bun run dev        # or: npm run dev
-```
-
-The frontend will be available at `http://localhost:3000`.
-
-> **Note:** In local dev the frontend proxies `/api/*` requests to the backend. Set `NUXT_BACKEND_URL` if your backend runs on a non-default port.
+See `backend/.env.example` for the full list of environment variables (SMTP, scheduler timezone, CORS, etc.).
 
 ---
 
-## Project Structure
+## Stack
 
-```
-github-reporter/
-├── backend/
-│   ├── app/
-│   │   ├── main.py              # FastAPI entrypoint
-│   │   ├── config.py            # Environment configuration
-│   │   ├── auth.py              # Session & OAuth verification
-│   │   ├── db.py                # MongoDB connection
-│   │   ├── models/              # Pydantic request/response schemas
-│   │   ├── routes/              # API endpoints (auth, chat, repos, dashboard)
-│   │   ├── services/            # Business logic (LLM, GitHub, caching, crypto)
-│   │   └── tools/               # LlamaIndex agent tools (commits, PRs, issues, ...)
-│   ├── requirements.txt
-│   ├── Dockerfile
-│   └── .env.example
-├── frontend/
-│   ├── app/
-│   │   ├── pages/               # Vue pages (dashboard, chat, settings, login)
-│   │   ├── components/          # UI components (chat, dashboard, layout)
-│   │   ├── composables/         # Vue composition hooks (auth, chat, repos, API)
-│   │   └── types/               # TypeScript interfaces
-│   ├── server/routes/           # API proxy to backend
-│   ├── nuxt.config.ts
-│   ├── package.json
-│   └── Dockerfile
-└── docker-compose.yml
-```
-
----
-
-## API Overview
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/health` | Health check |
-| `GET` | `/api/auth/github-url` | Get GitHub OAuth URL |
-| `POST` | `/api/auth/github/exchange` | Exchange OAuth code for session |
-| `POST` | `/api/auth/logout` | Log out |
-| `GET` | `/api/auth/me` | Current user profile |
-| `GET` | `/api/repos` | List connected repos |
-| `POST` | `/api/repos` | Connect a new repo |
-| `GET` | `/api/repos/available` | List repos available via GitHub App |
-| `DELETE` | `/api/repos/{repo_id}` | Disconnect a repo |
-| `POST` | `/api/chat` | Send a chat message (SSE stream) |
-| `GET` | `/api/chats` | List chat sessions |
-| `GET` | `/api/chats/{chat_id}` | Get chat history |
-| `DELETE` | `/api/chats/{chat_id}` | Delete a chat |
-| `GET` | `/api/dashboard/summary` | Cached repo summary |
-| `GET` | `/api/dashboard/details` | Detailed repo statistics |
-
----
-
-## Configuration Reference
-
-All configuration is done via `backend/.env`. See [`backend/.env.example`](backend/.env.example) for the full template.
-
-| Variable | Required | Description |
-|---|---|---|
-| `GITHUB_APP_CLIENT_ID` | Yes | OAuth Client ID from your GitHub App |
-| `GITHUB_APP_CLIENT_SECRET` | Yes | OAuth Client Secret |
-| `GITHUB_APP_SLUG` | Yes | Your GitHub App's URL slug |
-| `SESSION_SECRET` | Yes | Secret for signing cookies & encrypting tokens |
-| `APP_URL` | Yes | Frontend URL (for OAuth callback redirect) |
-| `GOOGLE_API_KEY` | * | Google Gemini API key |
-| `OPENAI_API_KEY` | * | OpenAI API key |
-| `ANTHROPIC_API_KEY` | * | Anthropic Claude API key |
-| `DEFAULT_LLM_PROVIDER` | No | Default provider: `gemini`, `openai`, or `anthropic` |
-| `DEFAULT_LLM_MODEL` | No | Default model name |
-| `MONGODB_URL` | No | MongoDB connection string (default: `mongodb://localhost:27017`) |
-| `MONGODB_DB_NAME` | No | Database name (default: `github_reporter`) |
-| `CORS_ORIGINS` | No | Allowed origins, comma-separated (default: `*`) |
-
-\* At least one LLM API key is required.
+| Layer | |
+|---|---|
+| Frontend | Nuxt 4, Vue 3, TypeScript, TailwindCSS, shadcn-nuxt |
+| Backend | FastAPI, Python 3.11, LlamaIndex, PyGithub, APScheduler |
+| Data | MongoDB (state), Redis (streaming + cancel pub/sub) |
+| LLMs | Google Gemini, OpenAI, Anthropic Claude |
+| Hosting | Railway (production), Docker Compose (local) |
 
 ---
 
 ## License
 
-This project is proprietary. All rights reserved.
+Proprietary. All rights reserved.
