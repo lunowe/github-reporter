@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth import get_admin_user, is_admin
 from app.config import Settings, get_settings
-from app.models.api import UserReposUpdate, UserPlanUpdate
+from app.models.api import UserReposUpdate, UserLimitsUpdate, UsageAdjust
 from app.services import plans, usage_service, user_service
 from app.services.user_service import (
     list_all_users,
@@ -15,7 +15,7 @@ from app.services.user_service import (
     count_invited_by,
     list_invitees,
     names_for_ids,
-    set_user_plan,
+    set_user_limits,
     get_user_by_id,
 )
 
@@ -98,6 +98,8 @@ async def user_detail(
         "plan": target.get("plan", settings.default_plan),
         "plan_overrides": target.get("plan_overrides", {}),
         "extra_usage_opt_in": bool(target.get("extra_usage_opt_in", False)),
+        "suspended": bool(target.get("suspended", False)),
+        "allowed_models": target.get("allowed_models", []),
         "usage": summary,
         "lifetime": lifetime_totals,
         "by_model": by_model,
@@ -159,20 +161,22 @@ async def update_user_repos(
     return {"status": "updated", "allowed_repo_ids": updated.get("allowed_repo_ids", [])}
 
 
-@router.put("/users/{user_id}/plan")
-async def update_user_plan(
+@router.put("/users/{user_id}/limits")
+async def update_user_limits(
     user_id: str,
-    body: UserPlanUpdate,
+    body: UserLimitsUpdate,
     user: dict = Depends(get_admin_user),
 ):
-    """Assign a plan tier, optional budget override, and overage opt-in (admin only)."""
+    """Set tier, budget override, overage opt-in, suspension, and model allow-list (admin only)."""
     if body.plan not in plans.PLANS:
         raise HTTPException(status_code=400, detail="Unbekannter Tarif.")
-    updated = await set_user_plan(
+    updated = await set_user_limits(
         user_id,
         plan=body.plan,
         monthly_budget_usd=body.monthly_budget_usd,
         extra_usage_opt_in=body.extra_usage_opt_in,
+        suspended=body.suspended,
+        allowed_models=body.allowed_models,
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Benutzer nicht gefunden.")
@@ -181,4 +185,39 @@ async def update_user_plan(
         "plan": updated.get("plan"),
         "plan_overrides": updated.get("plan_overrides", {}),
         "extra_usage_opt_in": updated.get("extra_usage_opt_in", False),
+        "suspended": updated.get("suspended", False),
+        "allowed_models": updated.get("allowed_models", []),
     }
+
+
+@router.post("/users/{user_id}/usage/adjust")
+async def adjust_user_usage(
+    user_id: str,
+    body: UsageAdjust,
+    user: dict = Depends(get_admin_user),
+):
+    """Reset this month's usage to $0, or apply a USD credit (admin only)."""
+    target = await get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Benutzer nicht gefunden.")
+
+    admin_id = str(user["_id"])
+    if body.reset:
+        totals = await usage_service.period_usage(user_id, usage_service.month_start())
+        current = totals.get("cost_usd", 0.0)
+        if current <= 0:
+            return {"status": "noop", "adjusted_usd": 0.0}
+        await usage_service.record_adjustment(
+            user_id=user_id, delta_usd=-current,
+            note=body.note or "Monatsverbrauch zurückgesetzt", admin_id=admin_id,
+        )
+        return {"status": "reset", "adjusted_usd": round(-current, 6)}
+
+    if body.credit_usd and body.credit_usd > 0:
+        await usage_service.record_adjustment(
+            user_id=user_id, delta_usd=-abs(body.credit_usd),
+            note=body.note or "Gutschrift", admin_id=admin_id,
+        )
+        return {"status": "credited", "adjusted_usd": round(-abs(body.credit_usd), 6)}
+
+    raise HTTPException(status_code=400, detail="Nichts anzupassen (reset oder credit_usd angeben).")

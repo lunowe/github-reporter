@@ -75,7 +75,7 @@ class UserReposUpdate(BaseModel):
     allowed_repo_ids: list[str] = Field(..., description="Liste erlaubter Repository-IDs")
 
 
-class UserPlanUpdate(BaseModel):
+class UserLimitsUpdate(BaseModel):
     plan: str = Field(..., description="Plan-Schlüssel (z.B. 'free', 'pro', 'unlimited')")
     monthly_budget_usd: Optional[float] = Field(
         default=None, ge=0,
@@ -85,6 +85,24 @@ class UserPlanUpdate(BaseModel):
         default=False,
         description="Pay-per-token-Mehrverbrauch über das Budget hinaus erlauben.",
     )
+    suspended: bool = Field(
+        default=False, description="Konto sperren — blockiert neue Chat-Läufe.",
+    )
+    allowed_models: list[str] = Field(
+        default_factory=list,
+        description="Erlaubte LLM-Modelle. Leer = alle Modelle erlaubt.",
+    )
+
+
+class UsageAdjust(BaseModel):
+    reset: bool = Field(
+        default=False, description="Aktuellen Monatsverbrauch auf $0 zurücksetzen.",
+    )
+    credit_usd: Optional[float] = Field(
+        default=None, ge=0,
+        description="Gutschrift in USD (reduziert den abgerechneten Verbrauch).",
+    )
+    note: str = Field(default="", max_length=300, description="Notiz für das Audit-Log.")
 
 
 # ── Automations ────────────────────────────────────────────────────────

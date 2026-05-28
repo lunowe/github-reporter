@@ -98,6 +98,52 @@ async def record_usage(
         logger.exception("Failed to record usage event (user=%s kind=%s)", user_id, kind)
 
 
+async def record_adjustment(
+    *,
+    user_id: str,
+    delta_usd: float,
+    note: str = "",
+    admin_id: str = "",
+) -> bool:
+    """
+    Insert a manual cost adjustment (negative ``delta_usd`` == a credit).
+
+    Stored as a ``kind="adjustment"`` event so it nets into period/lifetime
+    totals (and thus the budget) while staying out of the per-model and daily
+    visual breakdowns. Keeps a full audit trail (who, when, why).
+    """
+    try:
+        doc = {
+            "user_id": user_id,
+            "kind": "adjustment",
+            "chat_id": None,
+            "automation_id": None,
+            "run_id": None,
+            "step_order": None,
+            "repo": "",
+            "provider": "",
+            "model": "",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cached_tokens": 0,
+            "input_cost_usd": 0.0,
+            "output_cost_usd": 0.0,
+            "cost_usd": round(float(delta_usd), 6),
+            "pricing_version": pricing.PRICING_VERSION,
+            "priced": True,
+            "status": "adjustment",
+            "note": note,
+            "admin_id": admin_id,
+            "created_at": datetime.now(timezone.utc),
+        }
+        await get_db().usage_events.insert_one(doc)
+        return True
+    except Exception:
+        logger.exception("Failed to record usage adjustment (user=%s)", user_id)
+        return False
+
+
 # ── Aggregations ─────────────────────────────────────────────────────────
 
 _TOTALS_GROUP = {
@@ -215,7 +261,7 @@ async def usage_summary(
 async def per_model_breakdown(match: dict) -> list[dict]:
     db = get_db()
     rows = await db.usage_events.aggregate([
-        {"$match": match},
+        {"$match": {**match, "kind": {"$ne": "adjustment"}}},
         {"$group": {
             "_id": {"provider": "$provider", "model": "$model"},
             "cost_usd": {"$sum": "$cost_usd"},
@@ -237,7 +283,7 @@ async def daily_series(match: dict, *, days: int = 30) -> list[dict]:
     """Daily cost/token series (UTC), oldest→newest, for the matched events."""
     db = get_db()
     rows = await db.usage_events.aggregate([
-        {"$match": match},
+        {"$match": {**match, "kind": {"$ne": "adjustment"}}},
         {"$group": {
             "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$created_at", "timezone": "UTC"}},
             "cost_usd": {"$sum": "$cost_usd"},
@@ -338,3 +384,53 @@ async def check_limit(
         "period_cost_usd": round(cost, 6),
         "extra_usage_opt_in": opted_in,
     }
+
+
+async def check_run_allowed(
+    user: dict,
+    *,
+    model: str,
+    is_admin: bool = False,
+    default_plan: str = plans.FALLBACK_PLAN_KEY,
+    enforce_budget: bool = False,
+) -> dict:
+    """
+    The full gate for starting a run. Returns ``{"allowed": bool, ...}`` with an
+    HTTP ``status`` and a German ``message`` when blocked.
+
+    Always-on checks: account suspension, per-user model allow-list. Budget is
+    only consulted when ``enforce_budget`` is True. Admins bypass everything.
+    """
+    if is_admin:
+        return {"allowed": True}
+
+    if user.get("suspended"):
+        return {
+            "allowed": False,
+            "status": 403,
+            "reason": "suspended",
+            "message": "Dein Konto wurde gesperrt. Bitte kontaktiere den Administrator.",
+        }
+
+    allowed_models = user.get("allowed_models") or []
+    if allowed_models and model not in allowed_models:
+        return {
+            "allowed": False,
+            "status": 403,
+            "reason": "model_not_allowed",
+            "message": "Dieses Modell ist für dein Konto nicht freigegeben.",
+        }
+
+    if enforce_budget:
+        d = await check_limit(user, is_admin=is_admin, default_plan=default_plan)
+        if not d["allowed"]:
+            return {
+                "allowed": False,
+                "status": 429,
+                "reason": d["reason"],
+                "message": "Monatliches Nutzungsbudget aufgebraucht.",
+                "budget_usd": d.get("budget_usd"),
+                "period_cost_usd": d.get("period_cost_usd"),
+            }
+
+    return {"allowed": True}

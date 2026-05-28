@@ -94,6 +94,8 @@ export interface UserDetail {
   plan: string;
   plan_overrides: { monthly_budget_usd?: number };
   extra_usage_opt_in: boolean;
+  suspended: boolean;
+  allowed_models: string[];
   usage: UsageSummary;
   lifetime: Totals;
   by_model: ByModel[];
@@ -109,10 +111,18 @@ export interface PlanTier {
   overage_allowed: boolean;
 }
 
-export interface PlanUpdateBody {
+export interface LimitsUpdateBody {
   plan: string;
   monthly_budget_usd: number | null;
   extra_usage_opt_in: boolean;
+  suspended: boolean;
+  allowed_models: string[];
+}
+
+export interface UsageAdjustBody {
+  reset?: boolean;
+  credit_usd?: number | null;
+  note?: string;
 }
 
 export function useAdminStats() {
@@ -130,14 +140,21 @@ export function useAdminStats() {
     return apiFetch<PlanTier[]>("/api/admin/plans");
   }
 
-  function updateUserPlan(userId: string, body: PlanUpdateBody) {
-    return apiFetch(`/api/admin/users/${userId}/plan`, {
+  function updateUserLimits(userId: string, body: LimitsUpdateBody) {
+    return apiFetch(`/api/admin/users/${userId}/limits`, {
       method: "PUT",
       body,
     });
   }
 
-  return { fetchOverview, fetchUserDetail, fetchPlans, updateUserPlan };
+  function adjustUsage(userId: string, body: UsageAdjustBody) {
+    return apiFetch(`/api/admin/users/${userId}/usage/adjust`, {
+      method: "POST",
+      body,
+    });
+  }
+
+  return { fetchOverview, fetchUserDetail, fetchPlans, updateUserLimits, adjustUsage };
 }
 
 // ── Shared formatting helpers (auto-imported by Nuxt) ──

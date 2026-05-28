@@ -73,23 +73,6 @@ async def chat(
         if not allowed_repo:
             raise HTTPException(status_code=403, detail="Kein Zugriff auf dieses Repository.")
 
-    # Usage / budget gate. The decision is always computed (cheap), but we only
-    # hard-block when enforcement is switched on — foundation first.
-    if settings.usage_limit_enforced:
-        decision = await usage_service.check_limit(
-            user, is_admin=is_admin(user, settings), default_plan=settings.default_plan,
-        )
-        if not decision["allowed"]:
-            raise HTTPException(
-                status_code=429,
-                detail={
-                    "message": "Monatliches Nutzungsbudget aufgebraucht.",
-                    "reason": decision["reason"],
-                    "budget_usd": decision.get("budget_usd"),
-                    "period_cost_usd": decision.get("period_cost_usd"),
-                },
-            )
-
     # Reject a second concurrent run on the same chat BEFORE we do any
     # expensive LLM/token work. Only applies to existing chats — fresh chats
     # can't have an active run yet.
@@ -117,6 +100,26 @@ async def chat(
     )
     provider = infer_provider(model)
     llm_config = LLMConfig(provider=provider, model=model, temperature=1)
+
+    # Access gate: suspension + per-user model allow-list are always enforced;
+    # the monthly budget is only hard-blocked when enforcement is switched on.
+    gate = await usage_service.check_run_allowed(
+        user,
+        model=model,
+        is_admin=is_admin(user, settings),
+        default_plan=settings.default_plan,
+        enforce_budget=settings.usage_limit_enforced,
+    )
+    if not gate["allowed"]:
+        raise HTTPException(
+            status_code=gate.get("status", 403),
+            detail={
+                "message": gate.get("message", "Zugriff verweigert."),
+                "reason": gate.get("reason"),
+                "budget_usd": gate.get("budget_usd"),
+                "period_cost_usd": gate.get("period_cost_usd"),
+            },
+        )
 
     token = await resolve_github_token(user)
     github_service = GitHubService(token=token, repo_full_name=repo)

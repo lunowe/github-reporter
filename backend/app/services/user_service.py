@@ -70,6 +70,8 @@ async def upsert_from_github(
         "plan": FALLBACK_PLAN_KEY,
         "plan_overrides": {},
         "extra_usage_opt_in": False,
+        "suspended": False,
+        "allowed_models": [],
     }
 
     # New users: activated depends on settings
@@ -126,6 +128,8 @@ async def create_email_user(
         "plan": FALLBACK_PLAN_KEY,
         "plan_overrides": {},
         "extra_usage_opt_in": False,
+        "suspended": False,
+        "allowed_models": [],
         "activated": True,
         "activated_via": "invite",
         "activated_at": now,
@@ -216,6 +220,8 @@ async def list_all_users() -> list[dict]:
             "plan": user.get("plan", FALLBACK_PLAN_KEY),
             "plan_overrides": user.get("plan_overrides", {}),
             "extra_usage_opt_in": user.get("extra_usage_opt_in", False),
+            "suspended": user.get("suspended", False),
+            "allowed_models": user.get("allowed_models", []),
             "invited_by": user.get("invited_by"),
             "created_at": user.get("created_at", ""),
             "last_seen_at": user.get("last_seen_at", ""),
@@ -276,16 +282,23 @@ async def list_invitees(inviter_id: str) -> list[dict]:
     return out
 
 
-async def set_user_plan(
+async def set_user_limits(
     user_id: str,
     *,
     plan: str,
     monthly_budget_usd: float | None,
     extra_usage_opt_in: bool,
+    suspended: bool,
+    allowed_models: list[str],
 ) -> dict | None:
-    """Admin action: assign a plan tier, optional budget override, and overage opt-in."""
+    """Admin action: tier, budget override, overage opt-in, suspension, model allow-list."""
     db = get_db()
-    update: dict = {"$set": {"plan": plan, "extra_usage_opt_in": bool(extra_usage_opt_in)}}
+    update: dict = {"$set": {
+        "plan": plan,
+        "extra_usage_opt_in": bool(extra_usage_opt_in),
+        "suspended": bool(suspended),
+        "allowed_models": list(allowed_models or []),
+    }}
     if monthly_budget_usd is None:
         update["$unset"] = {"plan_overrides.monthly_budget_usd": ""}
     else:
@@ -352,10 +365,24 @@ async def migrate_existing_users():
     # Backfill plan fields for productization (default tier + no overage).
     plan_result = await db.users.update_many(
         {"plan": {"$exists": False}},
-        {"$set": {"plan": FALLBACK_PLAN_KEY, "plan_overrides": {}, "extra_usage_opt_in": False}},
+        {"$set": {
+            "plan": FALLBACK_PLAN_KEY,
+            "plan_overrides": {},
+            "extra_usage_opt_in": False,
+            "suspended": False,
+            "allowed_models": [],
+        }},
     )
     if plan_result.modified_count > 0:
         logger.info("Backfilled plan fields on %d existing users", plan_result.modified_count)
+
+    # Users created by the first plan migration won't have the limit fields.
+    limit_result = await db.users.update_many(
+        {"suspended": {"$exists": False}},
+        {"$set": {"suspended": False, "allowed_models": []}},
+    )
+    if limit_result.modified_count > 0:
+        logger.info("Backfilled limit fields on %d existing users", limit_result.modified_count)
 
 
 async def ensure_indexes():

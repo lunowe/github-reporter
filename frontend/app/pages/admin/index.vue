@@ -18,14 +18,14 @@ import {
   Hash,
   Activity,
 } from "lucide-vue-next";
-import type { PlanTier, UsageOverview } from "~/composables/useAdminStats";
+import type { UsageOverview } from "~/composables/useAdminStats";
 
 const { isAdmin, user } = useAuth();
 const { codes, loading: codesLoading, fetchCodes, generateCode, revokeCode } = useAccessCodes();
 const { invites, loading: invitesLoading, fetchInvites, createInvite, revokeInvite } = useInvites();
 const { repos, fetchRepos } = useRepos();
 const { apiFetch } = useApi();
-const { fetchOverview, fetchPlans } = useAdminStats();
+const { fetchOverview } = useAdminStats();
 
 // Redirect non-admin users
 onMounted(() => {
@@ -38,7 +38,6 @@ onMounted(() => {
   fetchRepos();
   loadUsers();
   loadOverview();
-  loadPlans();
 });
 
 // ── Usage Overview ──
@@ -60,30 +59,41 @@ const maxDailyCost = computed(() =>
   Math.max(0.0001, ...((overview.value?.daily_series ?? []).map((d) => d.cost_usd))),
 );
 
-// ── Plans (for the per-user plan editor) ──
-const plans = ref<PlanTier[]>([]);
-async function loadPlans() {
-  try {
-    plans.value = await fetchPlans();
-  } catch {
-    plans.value = [];
-  }
-}
-
-// ── User detail dialog ──
-const selectedUserId = ref<string | null>(null);
-const showUserDetail = ref(false);
-
+// ── User navigation ──
 function openUserDetail(u: UserInfo) {
-  selectedUserId.value = u.id;
-  showUserDetail.value = true;
+  navigateTo(`/admin/users/${u.id}`);
 }
 
-function onUserUpdated() {
-  // Plan/budget changed — refresh the list and overview totals.
-  loadUsers();
-  loadOverview();
-}
+// ── Search & sort for the user list ──
+const userSearch = ref("");
+type SortKey = "cost" | "tokens" | "name" | "recent";
+const userSort = ref<SortKey>("cost");
+
+const displayedUsers = computed(() => {
+  const q = userSearch.value.trim().toLowerCase();
+  let list = users.value;
+  if (q) {
+    list = list.filter(
+      (u) =>
+        (u.display_name || "").toLowerCase().includes(q) ||
+        (u.github_login || "").toLowerCase().includes(q) ||
+        (u.email || "").toLowerCase().includes(q),
+    );
+  }
+  return [...list].sort((a, b) => {
+    switch (userSort.value) {
+      case "tokens":
+        return (b.usage?.period_tokens || 0) - (a.usage?.period_tokens || 0);
+      case "name":
+        return (a.display_name || "").localeCompare(b.display_name || "");
+      case "recent":
+        return new Date(b.last_seen_at || 0).getTime() - new Date(a.last_seen_at || 0).getTime();
+      case "cost":
+      default:
+        return (b.usage?.period_cost_usd || 0) - (a.usage?.period_cost_usd || 0);
+    }
+  });
+});
 
 // ── Access Code Generation ──
 const codeLabel = ref("");
@@ -650,9 +660,28 @@ function formatDate(d: string | Date) {
               Keine Benutzer vorhanden.
             </div>
 
-            <div v-else class="space-y-2">
+            <template v-else>
+              <!-- Search & sort -->
+              <div class="flex flex-col sm:flex-row gap-2 mb-3">
+                <Input v-model="userSearch" placeholder="Suchen (Name, Login, E-Mail)…" class="flex-1" />
+                <Select v-model="userSort">
+                  <SelectTrigger class="w-full sm:w-48"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cost">Sortierung: Kosten</SelectItem>
+                    <SelectItem value="tokens">Sortierung: Tokens</SelectItem>
+                    <SelectItem value="recent">Sortierung: Zuletzt aktiv</SelectItem>
+                    <SelectItem value="name">Sortierung: Name</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div v-if="displayedUsers.length === 0" class="text-sm text-muted-foreground text-center py-8">
+                Keine Treffer.
+              </div>
+
+              <div v-else class="space-y-2">
               <div
-                v-for="u in users"
+                v-for="u in displayedUsers"
                 :key="u.id"
                 class="flex items-center justify-between gap-3 rounded-md border px-3 py-2 cursor-pointer hover:bg-accent/50 transition-colors"
                 @click="openUserDetail(u)"
@@ -661,6 +690,7 @@ function formatDate(d: string | Date) {
                   <div class="flex items-center gap-2 flex-wrap">
                     <span class="text-sm font-medium">{{ u.display_name }}</span>
                     <Badge variant="outline" class="text-xs">{{ u.usage?.plan_label || u.plan }}</Badge>
+                    <Badge v-if="u.suspended" variant="destructive" class="text-[10px]">Gesperrt</Badge>
                     <Badge v-if="u.extra_usage_opt_in" variant="secondary" class="text-[10px]">Mehrverbrauch</Badge>
                     <Badge v-if="u.role === 'viewer'" variant="secondary" class="text-xs">Viewer</Badge>
                     <Badge v-if="!u.activated" variant="destructive" class="text-xs">Nicht aktiviert</Badge>
@@ -714,7 +744,8 @@ function formatDate(d: string | Date) {
                   </Button>
                 </div>
               </div>
-            </div>
+              </div>
+            </template>
           </CardContent>
         </Card>
       </TabsContent>
@@ -769,13 +800,5 @@ function formatDate(d: string | Date) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
-
-    <!-- ── User Detail / Plan Dialog ── -->
-    <AdminUserDetailDialog
-      v-model:open="showUserDetail"
-      :user-id="selectedUserId"
-      :plans="plans"
-      @updated="onUserUpdated"
-    />
   </main>
 </template>

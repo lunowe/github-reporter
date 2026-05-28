@@ -58,6 +58,8 @@ def _user_profile(user: dict, settings: Settings) -> dict:
         "plan_label": plan.label,
         "budget_usd": budget,
         "extra_usage_opt_in": bool(user.get("extra_usage_opt_in", False)),
+        "suspended": bool(user.get("suspended", False)),
+        "allowed_models": user.get("allowed_models", []),
     }
 
 
