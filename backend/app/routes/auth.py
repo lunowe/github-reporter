@@ -21,6 +21,7 @@ from app.auth import (
     is_admin,
 )
 from app.config import Settings, get_settings
+from app.services import plans, usage_service
 from app.services.crypto import encrypt_token
 from app.services.user_service import (
     upsert_from_github,
@@ -39,6 +40,9 @@ GITHUB_USER_URL = "https://api.github.com/user"
 
 def _user_profile(user: dict, settings: Settings) -> dict:
     """Build the user profile response dict."""
+    admin_flag = is_admin(user, settings)
+    plan = plans.resolve_plan(user, is_admin=admin_flag, default_plan=settings.default_plan)
+    budget = plans.effective_budget_usd(user, is_admin=admin_flag, default_plan=settings.default_plan)
     return {
         "id": str(user["_id"]),
         "github_id": user.get("github_id"),
@@ -49,7 +53,11 @@ def _user_profile(user: dict, settings: Settings) -> dict:
         "role": user.get("role", "user"),
         "activated": user.get("activated", False),
         "auth_method": user.get("auth_method", "github"),
-        "is_admin": is_admin(user, settings),
+        "is_admin": admin_flag,
+        "plan": plan.key,
+        "plan_label": plan.label,
+        "budget_usd": budget,
+        "extra_usage_opt_in": bool(user.get("extra_usage_opt_in", False)),
     }
 
 
@@ -219,5 +227,13 @@ async def me(
     user: dict = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
 ):
-    """Return the current user's profile."""
-    return _user_profile(user, settings)
+    """Return the current user's profile, including this month's usage summary."""
+    profile = _user_profile(user, settings)
+    try:
+        profile["usage"] = await usage_service.usage_summary(
+            user, is_admin=profile["is_admin"], default_plan=settings.default_plan,
+        )
+    except Exception:
+        logger.exception("Failed to attach usage summary to /me")
+        profile["usage"] = None
+    return profile

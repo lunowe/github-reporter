@@ -322,6 +322,32 @@ watch(comboboxOpen, (open) => {
             </Button>
           </CardContent>
         </Card>
+
+        <!-- Usage this month -->
+        <Card v-if="user?.usage" class="mt-4">
+          <CardHeader>
+            <CardTitle class="text-base">Nutzung diesen Monat</CardTitle>
+            <CardDescription>
+              Tarif <span class="font-medium">{{ user.usage.plan_label }}</span>
+              <template v-if="user.usage.budget_usd != null"> · Budget {{ formatUsd(user.usage.budget_usd) }}/Monat</template>
+              <template v-else> · unbegrenzt</template>
+            </CardDescription>
+          </CardHeader>
+          <CardContent class="space-y-2">
+            <AdminUsageBar
+              :cost="user.usage.period_cost_usd"
+              :budget="user.usage.budget_usd"
+              :pct-used="user.usage.pct_used"
+              :show-label="true"
+            />
+            <div class="flex items-center justify-between text-xs text-muted-foreground">
+              <span>{{ formatTokens(user.usage.period_tokens) }} Tokens · {{ user.usage.run_count }} Läufe</span>
+              <span v-if="user.usage.overage_usd > 0" class="text-red-500">
+                Mehrverbrauch: {{ formatUsd(user.usage.overage_usd) }}
+              </span>
+            </div>
+          </CardContent>
+        </Card>
       </TabsContent>
     </Tabs>
   </main>

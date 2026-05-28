@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     admin_github_login: str = ""  # GitHub username of the admin user
     require_access_code: bool = True  # Require access code for new users
 
+    # Plans & usage limits (productization foundation)
+    default_plan: str = "free"  # tier key assigned to new users (see services/plans.py)
+    # Hard-block (HTTP 429) chat runs once a non-opted-in user exceeds their
+    # monthly USD budget. Wired but OFF by default — turn on to enforce.
+    usage_limit_enforced: bool = False
+
     # Session / encryption
     session_secret: str = "change-me-in-production"
 

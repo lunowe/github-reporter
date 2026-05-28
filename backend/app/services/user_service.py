@@ -10,6 +10,7 @@ import bcrypt
 from bson import ObjectId
 
 from app.db import get_db
+from app.services.plans import FALLBACK_PLAN_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,9 @@ async def upsert_from_github(
         "role": "user",
         "auth_method": "github",
         "created_at": now,
+        "plan": FALLBACK_PLAN_KEY,
+        "plan_overrides": {},
+        "extra_usage_opt_in": False,
     }
 
     # New users: activated depends on settings
@@ -119,6 +123,9 @@ async def create_email_user(
         "proxy_github_user_id": proxy_github_user_id,
         "allowed_repo_ids": allowed_repo_ids,
         "invited_by": invited_by,
+        "plan": FALLBACK_PLAN_KEY,
+        "plan_overrides": {},
+        "extra_usage_opt_in": False,
         "activated": True,
         "activated_via": "invite",
         "activated_at": now,
@@ -206,10 +213,92 @@ async def list_all_users() -> list[dict]:
             "auth_method": user.get("auth_method", "github"),
             "activated": user.get("activated", False),
             "allowed_repo_ids": user.get("allowed_repo_ids", []),
+            "plan": user.get("plan", FALLBACK_PLAN_KEY),
+            "plan_overrides": user.get("plan_overrides", {}),
+            "extra_usage_opt_in": user.get("extra_usage_opt_in", False),
+            "invited_by": user.get("invited_by"),
             "created_at": user.get("created_at", ""),
             "last_seen_at": user.get("last_seen_at", ""),
         })
     return users
+
+
+async def names_for_ids(user_ids: list[str]) -> dict[str, dict]:
+    """Light profile lookup (display name / login / role) for a batch of ids."""
+    if not user_ids:
+        return {}
+    oids = []
+    for i in user_ids:
+        try:
+            oids.append(ObjectId(i))
+        except Exception:
+            pass
+    db = get_db()
+    out: dict[str, dict] = {}
+    async for u in db.users.find(
+        {"_id": {"$in": oids}},
+        {"display_name": 1, "github_login": 1, "email": 1, "role": 1},
+    ):
+        out[str(u["_id"])] = {
+            "display_name": u.get("display_name", ""),
+            "github_login": u.get("github_login"),
+            "email": u.get("email", ""),
+            "role": u.get("role", ""),
+        }
+    return out
+
+
+async def count_invited_by(user_ids: list[str]) -> dict[str, int]:
+    """How many users each of `user_ids` invited (keyed by inviter id)."""
+    if not user_ids:
+        return {}
+    db = get_db()
+    rows = await db.users.aggregate([
+        {"$match": {"invited_by": {"$in": user_ids}}},
+        {"$group": {"_id": "$invited_by", "count": {"$sum": 1}}},
+    ]).to_list(length=None)
+    return {r["_id"]: int(r["count"]) for r in rows if r.get("_id")}
+
+
+async def list_invitees(inviter_id: str) -> list[dict]:
+    """Users invited by `inviter_id` (light projection for the admin detail view)."""
+    db = get_db()
+    out = []
+    async for u in db.users.find({"invited_by": inviter_id}).sort("created_at", -1):
+        out.append({
+            "id": str(u["_id"]),
+            "display_name": u.get("display_name", ""),
+            "email": u.get("email", ""),
+            "role": u.get("role", "viewer"),
+            "created_at": u.get("created_at", ""),
+            "last_seen_at": u.get("last_seen_at", ""),
+        })
+    return out
+
+
+async def set_user_plan(
+    user_id: str,
+    *,
+    plan: str,
+    monthly_budget_usd: float | None,
+    extra_usage_opt_in: bool,
+) -> dict | None:
+    """Admin action: assign a plan tier, optional budget override, and overage opt-in."""
+    db = get_db()
+    update: dict = {"$set": {"plan": plan, "extra_usage_opt_in": bool(extra_usage_opt_in)}}
+    if monthly_budget_usd is None:
+        update["$unset"] = {"plan_overrides.monthly_budget_usd": ""}
+    else:
+        update["$set"]["plan_overrides.monthly_budget_usd"] = float(monthly_budget_usd)
+    try:
+        result = await db.users.find_one_and_update(
+            {"_id": ObjectId(user_id)}, update, return_document=True,
+        )
+    except Exception:
+        return None
+    if result:
+        result["id"] = str(result["_id"])
+    return result
 
 
 async def update_allowed_repos(user_id: str, allowed_repo_ids: list[str]) -> dict | None:
@@ -259,6 +348,14 @@ async def migrate_existing_users():
     )
     if result.modified_count > 0:
         logger.info("Migrated %d existing users (set activated=True)", result.modified_count)
+
+    # Backfill plan fields for productization (default tier + no overage).
+    plan_result = await db.users.update_many(
+        {"plan": {"$exists": False}},
+        {"$set": {"plan": FALLBACK_PLAN_KEY, "plan_overrides": {}, "extra_usage_opt_in": False}},
+    )
+    if plan_result.modified_count > 0:
+        logger.info("Backfilled plan fields on %d existing users", plan_result.modified_count)
 
 
 async def ensure_indexes():

@@ -44,6 +44,7 @@ async def lifespan(app: FastAPI):
     from app.services.access_code_service import ensure_indexes as access_code_indexes
     from app.services.invite_service import ensure_indexes as invite_indexes
     from app.services.automations_store import ensure_indexes as automations_indexes
+    from app.services.usage_service import ensure_indexes as usage_indexes
     from app.services.scheduler import start_scheduler, shutdown_scheduler
     from app.services import stream_manager
 
@@ -53,6 +54,7 @@ async def lifespan(app: FastAPI):
     await access_code_indexes()
     await invite_indexes()
     await automations_indexes()
+    await usage_indexes()
 
     # Migrate existing users to have activation fields
     await migrate_existing_users()

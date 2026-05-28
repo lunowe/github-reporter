@@ -75,6 +75,18 @@ class UserReposUpdate(BaseModel):
     allowed_repo_ids: list[str] = Field(..., description="Liste erlaubter Repository-IDs")
 
 
+class UserPlanUpdate(BaseModel):
+    plan: str = Field(..., description="Plan-Schlüssel (z.B. 'free', 'pro', 'unlimited')")
+    monthly_budget_usd: Optional[float] = Field(
+        default=None, ge=0,
+        description="Budget-Override in USD. Leer = Standardbudget des Tarifs verwenden.",
+    )
+    extra_usage_opt_in: bool = Field(
+        default=False,
+        description="Pay-per-token-Mehrverbrauch über das Budget hinaus erlauben.",
+    )
+
+
 # ── Automations ────────────────────────────────────────────────────────
 
 class AutomationStepIn(BaseModel):

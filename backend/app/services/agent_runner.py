@@ -23,6 +23,7 @@ from llama_index.core.agent.workflow import (
 )
 from llama_index.core.llms import ChatMessage
 from llama_index.core.memory import Memory
+from llama_index.core.callbacks import CallbackManager, TokenCountingHandler
 
 from app.services.llm_factory import LLMConfig, build_llm
 from app.services.github_service import GitHubService
@@ -30,6 +31,42 @@ from app.tools.registry import build_all_tools
 from app.utils import trunc, safe_serialize_kwargs
 
 logger = logging.getLogger(__name__)
+
+# Provider usage payloads use different key names; normalize across all three.
+_INPUT_TOKEN_KEYS = ("prompt_tokens", "input_tokens", "prompt_token_count")
+_OUTPUT_TOKEN_KEYS = ("completion_tokens", "output_tokens", "candidates_token_count")
+_CACHED_TOKEN_KEYS = ("cache_read_input_tokens", "cached_content_token_count", "cached_tokens")
+
+
+def _coerce_usage_dict(raw, additional_kwargs) -> dict:
+    """Pull the usage mapping out of a raw provider response (or kwargs)."""
+    usage = None
+    if isinstance(raw, dict):
+        usage = raw.get("usage") or raw.get("usage_metadata")
+    elif raw is not None:
+        usage = getattr(raw, "usage", None) or getattr(raw, "usage_metadata", None)
+    if usage is None:
+        usage = additional_kwargs or {}
+    if usage and not isinstance(usage, dict):
+        try:
+            usage = usage.model_dump()
+        except Exception:
+            try:
+                usage = dict(usage)
+            except Exception:
+                usage = {}
+    return usage or {}
+
+
+def _pick(usage: dict, keys: tuple[str, ...]) -> int:
+    for k in keys:
+        if k in usage and usage[k] is not None:
+            try:
+                return int(usage[k])
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
 
 SYSTEM_PROMPT_TEMPLATE = """\
 Du bist der **GitHub Projekt-Reporter** – ein KI-Assistent, der Projektmanagern und Teamleads \
@@ -76,6 +113,8 @@ class AgentRunner:
     ):
         self.github_service = github_service
         self.tools = build_all_tools(github_service)
+        self.provider = llm_config.provider
+        self.model = llm_config.model
 
         self.system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
             today=date.today().isoformat(),
@@ -84,12 +123,66 @@ class AgentRunner:
         llm_config.system_prompt = self.system_prompt
         self.llm = build_llm(llm_config)
 
+        # Per-instance token accounting. A fresh CallbackManager is attached to
+        # *this* LLM only — never the global Settings — so concurrent runs can't
+        # cross-contaminate. The handler accumulates real provider token counts
+        # (tiktoken estimate fallback) across every tool-calling turn in a run.
+        self._token_counter = TokenCountingHandler()
+        self.llm.callback_manager = CallbackManager([self._token_counter])
+
+        # Fallback accumulators, summed off AgentOutput.raw during the stream in
+        # case the callback doesn't fire for a given provider/version.
+        self._fallback_prompt = 0
+        self._fallback_completion = 0
+        self._cached_tokens = 0
+
         self.agent = FunctionAgent(
             llm=self.llm,
             tools=self.tools,
             system_prompt=self.system_prompt,
             allow_parallel_tool_calls=False,
         )
+
+    def _reset_usage(self) -> None:
+        self._token_counter.reset_counts()
+        self._fallback_prompt = 0
+        self._fallback_completion = 0
+        self._cached_tokens = 0
+
+    def _accumulate_from_output(self, event: AgentOutput) -> None:
+        """Best-effort: sum usage from one AgentOutput's raw provider response."""
+        try:
+            additional = {}
+            if event.response is not None:
+                additional = getattr(event.response, "additional_kwargs", {}) or {}
+            usage = _coerce_usage_dict(event.raw, additional)
+            if not usage:
+                return
+            self._fallback_prompt += _pick(usage, _INPUT_TOKEN_KEYS)
+            self._fallback_completion += _pick(usage, _OUTPUT_TOKEN_KEYS)
+            self._cached_tokens += _pick(usage, _CACHED_TOKEN_KEYS)
+        except Exception:
+            logger.debug("Usage extraction from AgentOutput failed", exc_info=True)
+
+    def usage(self) -> dict:
+        """
+        Token usage for the most recent run. Prefers the callback handler's
+        cumulative counts; falls back to the per-output sum if the handler saw
+        nothing (e.g. provider didn't surface usage through the callback).
+        """
+        prompt = int(self._token_counter.prompt_llm_token_count or 0)
+        completion = int(self._token_counter.completion_llm_token_count or 0)
+        if prompt + completion == 0:
+            prompt = self._fallback_prompt
+            completion = self._fallback_completion
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": prompt + completion,
+            "cached_tokens": self._cached_tokens,
+        }
 
     async def run_streaming(
         self,
@@ -106,6 +199,7 @@ class AgentRunner:
         workflow handler to cancel so no more tool calls fire.
         """
         logger.info("Agent run: query=%r", query)
+        self._reset_usage()
 
         yield "status", {"status": "started"}
 
@@ -137,6 +231,7 @@ class AgentRunner:
                         yield "token", {"content": delta}
 
                 elif isinstance(event, AgentOutput):
+                    self._accumulate_from_output(event)
                     if event.tool_calls:
                         logger.info("Tool calls pending: %d", len(event.tool_calls))
 
@@ -181,6 +276,7 @@ class AgentRunner:
         Raises on failure so the caller can log/store the error.
         """
         logger.info("Agent run_once: query=%r", query)
+        self._reset_usage()
 
         llama_messages: list[ChatMessage] = []
         if chat_history:
@@ -203,6 +299,8 @@ class AgentRunner:
                 delta = event.delta or ""
                 if delta:
                     final_response += delta
+            elif isinstance(event, AgentOutput):
+                self._accumulate_from_output(event)
             elif isinstance(event, ToolCall):
                 logger.info("ToolCall: %s", event.tool_name)
             elif isinstance(event, ToolCallResult):

@@ -18,7 +18,7 @@ from typing import AsyncGenerator
 from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request
 from fastapi.responses import StreamingResponse
 
-from app.auth import get_activated_user
+from app.auth import get_activated_user, is_admin
 from app.config import get_settings, Settings
 from app.models.api import ChatRequest
 from app.redis_client import get_redis
@@ -26,7 +26,7 @@ from app.services.llm_factory import LLMConfig, infer_provider
 from app.services.github_service import GitHubService
 from app.services.agent_runner import AgentRunner
 from app.services.token_resolver import resolve_github_token
-from app.services import chat_store, stream_manager
+from app.services import chat_store, stream_manager, usage_service
 from app.services.stream_manager import (
     RunContext,
     TERMINAL_STATUSES,
@@ -72,6 +72,23 @@ async def chat(
         })
         if not allowed_repo:
             raise HTTPException(status_code=403, detail="Kein Zugriff auf dieses Repository.")
+
+    # Usage / budget gate. The decision is always computed (cheap), but we only
+    # hard-block when enforcement is switched on — foundation first.
+    if settings.usage_limit_enforced:
+        decision = await usage_service.check_limit(
+            user, is_admin=is_admin(user, settings), default_plan=settings.default_plan,
+        )
+        if not decision["allowed"]:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "message": "Monatliches Nutzungsbudget aufgebraucht.",
+                    "reason": decision["reason"],
+                    "budget_usd": decision.get("budget_usd"),
+                    "period_cost_usd": decision.get("period_cost_usd"),
+                },
+            )
 
     # Reject a second concurrent run on the same chat BEFORE we do any
     # expensive LLM/token work. Only applies to existing chats — fresh chats
@@ -178,6 +195,17 @@ async def chat(
                 msg_status = "error"
             else:
                 msg_status = "complete"
+
+            # Record token/cost usage for this run (best-effort; never raises).
+            usage = agent_runner.usage()
+            await usage_service.record_usage(
+                user_id=user_id,
+                kind="chat",
+                chat_id=chat_id,
+                repo=repo,
+                status=msg_status,
+                **usage,
+            )
 
             if full_response or tool_calls:
                 msg: dict = {

@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from app.config import get_settings
-from app.services import automations_store, email_service
+from app.services import automations_store, email_service, usage_service
 from app.services.agent_runner import AgentRunner
 from app.services.github_service import GitHubService
 from app.services.llm_factory import LLMConfig, infer_provider
@@ -89,8 +89,9 @@ async def _run_single_step(
     prompt: str,
     repo: str,
     model: str,
-) -> str:
-    """Build a fresh agent per step (repo varies) and run it once."""
+) -> tuple[str, dict]:
+    """Build a fresh agent per step (repo varies), run it once, and return the
+    output alongside this step's token usage."""
     provider = infer_provider(model)
     llm_config = LLMConfig(provider=provider, model=model, temperature=1)
 
@@ -98,7 +99,8 @@ async def _run_single_step(
     github_service = GitHubService(token=token, repo_full_name=repo)
 
     runner = AgentRunner(llm_config=llm_config, github_service=github_service)
-    return await runner.run_once(query=prompt)
+    output = await runner.run_once(query=prompt)
+    return output, runner.usage()
 
 
 async def execute_automation(
@@ -179,7 +181,7 @@ async def execute_automation(
 
         t0 = time.perf_counter()
         try:
-            output = await _run_single_step(
+            output, step_usage = await _run_single_step(
                 user=user,
                 prompt=resolved_prompt,
                 repo=repo,
@@ -187,6 +189,16 @@ async def execute_automation(
             )
             step_result["output"] = output
             prior_outputs.append(output)
+            await usage_service.record_usage(
+                user_id=user_id,
+                kind="automation",
+                automation_id=automation_id,
+                run_id=run_id,
+                step_order=order,
+                repo=repo,
+                status="complete",
+                **step_usage,
+            )
         except Exception as e:
             logger.exception("Automation %s step %d failed", automation_id, order)
             step_result["error"] = str(e)

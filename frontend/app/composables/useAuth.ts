@@ -13,6 +13,12 @@ export interface AuthUser {
   activated: boolean;
   auth_method: "github" | "email";
   is_admin: boolean;
+  // Plan & usage (productization) — populated by /api/auth/me.
+  plan?: string;
+  plan_label?: string;
+  budget_usd?: number | null;
+  extra_usage_opt_in?: boolean;
+  usage?: import("~/composables/useAdminStats").UsageSummary | null;
 }
 
 export function useAuth() {
