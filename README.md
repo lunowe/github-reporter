@@ -44,8 +44,37 @@ If you need a code or invite, ping me directly.
 ### Beyond chat
 - **Multi-repo dashboard** — cached at-a-glance stats per connected repo
 - **Automations** — chained-prompt workflows on a cron schedule; results delivered via SMTP email. Steps can reference earlier step outputs with `{{stepN.output}}` for templated reports.
+- **MCP server** — the same GitHub tools exposed over the Model Context Protocol (Streamable HTTP), so external MCP clients (Claude Desktop, Claude.ai, Cursor …) can query your repos directly. See [Connect via MCP](#connect-via-mcp).
 - **Admin tools** — user management, repo-scoped viewer invites, access code issuance
 - **Multi-LLM** — switch provider (Gemini / OpenAI / Anthropic) per session
+
+---
+
+## Connect via MCP
+
+The GitHub tools are also exposed as an [MCP](https://modelcontextprotocol.io) server over **Streamable HTTP**, mounted on the backend at `/mcp` and reachable behind the app's domain at **`https://<your-app>/mcp/`**. Any MCP-capable client can use it.
+
+**1. Get an API key.** Sign in, go to **Settings → API & MCP**, and create a key. It's shown once (format `ghr_…`) and acts on your behalf — running with your GitHub token and limited to repos you're allowed to query.
+
+**2. Add the server to your client.** Use the endpoint URL with the key as a bearer header. Example Claude Desktop config:
+
+```json
+{
+  "mcpServers": {
+    "github-reporter": {
+      "type": "http",
+      "url": "https://<your-app>/mcp/",
+      "headers": { "Authorization": "Bearer ghr_…" }
+    }
+  }
+}
+```
+
+On Claude.ai, add a custom **Connector** with the same URL and `Authorization` header.
+
+**3. Call tools.** Every tool takes a `repo` argument (`owner/repo`) plus its own parameters — e.g. `get_repo_summary`, `get_commits`, `list_pull_requests`, `list_issues`, `get_workflow_runs`, `browse_directory`, `read_file`, `compare_branches`, `search_code`, and the GHCR container tools. Keys can be revoked anytime from the same settings page.
+
+> **Hosting note.** `/mcp` lives on the backend and is proxied through the frontend (`server/routes/mcp/[...path].ts` → `NUXT_BACKEND_URL`), so it shares the app's public domain. If you instead expose the backend service directly, point clients at `https://<backend-host>/mcp/`.
 
 ---
 
@@ -151,7 +180,7 @@ See `backend/.env.example` for the full list of environment variables (SMTP, sch
 | Layer | |
 |---|---|
 | Frontend | Nuxt 4, Vue 3, TypeScript, TailwindCSS, shadcn-nuxt |
-| Backend | FastAPI, Python 3.11, LlamaIndex, PyGithub, APScheduler |
+| Backend | FastAPI, Python 3.11, LlamaIndex, PyGithub, APScheduler, FastMCP |
 | Data | MongoDB (state), Redis (streaming + cancel pub/sub) |
 | LLMs | Google Gemini, OpenAI, Anthropic Claude |
 | Hosting | Railway (production), Docker Compose (local) |

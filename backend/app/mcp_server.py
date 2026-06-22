@@ -235,5 +235,16 @@ async def find_image_for_commit(repo: str, commit_sha: str, package_name: Option
 
 
 def create_mcp_app():
-    """Build the Streamable HTTP ASGI app to mount into FastAPI (path-relative '/')."""
-    return mcp.http_app(path="/", transport="streamable-http", stateless_http=True)
+    """
+    Build the Streamable HTTP ASGI app to mount into FastAPI (path-relative '/').
+
+    `stateless_http` + `json_response` keep each call self-contained and make the
+    endpoint trivially proxyable (plain JSON, no long-lived SSE) — which is what
+    lets it sit behind the Nuxt `/mcp` proxy on the same public domain as the app.
+    """
+    return mcp.http_app(
+        path="/",
+        transport="streamable-http",
+        stateless_http=True,
+        json_response=True,
+    )
