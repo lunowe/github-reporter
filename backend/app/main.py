@@ -21,6 +21,8 @@ from app.routes.access_codes import router as access_codes_router
 from app.routes.invites import router as invites_router
 from app.routes.admin import router as admin_router
 from app.routes.automations import router as automations_router
+from app.routes.api_keys import router as api_keys_router
+from app.mcp_server import create_mcp_app
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,6 +31,10 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("google").setLevel(logging.WARNING)
+
+# Built once and shared: referenced by the lifespan (to run the MCP session
+# manager) and mounted in create_app(). The MCP server is exposed at /mcp.
+mcp_app = create_mcp_app()
 
 
 @asynccontextmanager
@@ -45,6 +51,7 @@ async def lifespan(app: FastAPI):
     from app.services.invite_service import ensure_indexes as invite_indexes
     from app.services.automations_store import ensure_indexes as automations_indexes
     from app.services.usage_service import ensure_indexes as usage_indexes
+    from app.services.api_key_service import ensure_indexes as api_key_indexes
     from app.services.scheduler import start_scheduler, shutdown_scheduler
     from app.services import stream_manager
 
@@ -55,6 +62,7 @@ async def lifespan(app: FastAPI):
     await invite_indexes()
     await automations_indexes()
     await usage_indexes()
+    await api_key_indexes()
 
     # Migrate existing users to have activation fields
     await migrate_existing_users()
@@ -66,7 +74,10 @@ async def lifespan(app: FastAPI):
     await stream_manager.start_cancel_subscriber()
 
     logging.getLogger(__name__).info("MongoDB connected: %s", settings.mongodb_db_name)
-    yield
+
+    # Run the mounted MCP server's session manager for the app's lifetime.
+    async with mcp_app.lifespan(app):
+        yield
     # Shutdown — stop accepting new runs, cancel any locally-owned runs so their
     # `finally` blocks fire and flush partial messages to Mongo, then tear down.
     await stream_manager.shutdown_local_runs()
@@ -103,6 +114,12 @@ def create_app() -> FastAPI:
     app.include_router(invites_router)
     app.include_router(admin_router)
     app.include_router(automations_router)
+    app.include_router(api_keys_router)
+
+    # MCP server over Streamable HTTP. Clients connect to /mcp/ with a personal
+    # API key (Authorization: Bearer ghr_...). Its session manager is driven by
+    # the lifespan above.
+    app.mount("/mcp", mcp_app)
 
     return app
 

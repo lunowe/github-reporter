@@ -51,6 +51,12 @@ class AccessCodeRedeem(BaseModel):
     code: str = Field(..., description="Der Zugangscode")
 
 
+# ── API Keys (MCP) ─────────────────────────────────────────────────────
+
+class ApiKeyCreate(BaseModel):
+    name: str = Field(default="", description="Bezeichnung des Schlüssels, z.B. 'Claude Desktop'")
+
+
 # ── Invites ────────────────────────────────────────────────────────────
 
 class InviteCreate(BaseModel):

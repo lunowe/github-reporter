@@ -14,6 +14,9 @@ llama-index-llms-google-genai
 llama-index-llms-openai
 llama-index-llms-anthropic
 
+# MCP — exposes the GitHub tools over Streamable HTTP to external MCP clients
+fastmcp
+
 # MongoDB
 motor
 
