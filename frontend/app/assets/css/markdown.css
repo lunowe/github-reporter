@@ -4,6 +4,8 @@
 
 .markdown {
   @apply text-sm leading-relaxed;
+  /* Long URLs, hashes, and unbroken words wrap instead of widening the bubble */
+  overflow-wrap: anywhere;
 }
 
 .markdown p {
@@ -43,6 +45,8 @@
 
 .markdown a {
   @apply text-primary underline underline-offset-2;
+  overflow-wrap: anywhere;
+  word-break: break-all;
 }
 
 .markdown blockquote {
@@ -85,9 +89,22 @@
   @apply text-[13px] font-mono leading-relaxed;
 }
 
-/* Tables */
+/* Tables — as wide as their content, scrolling sideways when that's wider
+   than the bubble (same approach GitHub takes) */
 .markdown table {
-  @apply w-full border-collapse mb-3 text-sm;
+  @apply border-collapse mb-3 text-sm;
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+}
+/* Cells keep whole words — the table scrolls rather than collapsing into
+   one-character-wide columns */
+.markdown th,
+.markdown td,
+.markdown table a {
+  overflow-wrap: normal;
+  word-break: normal;
 }
 .markdown th {
   @apply border border-border bg-muted px-3 py-1.5 text-left font-medium;
@@ -99,4 +116,32 @@
 /* Images */
 .markdown img {
   @apply max-w-full rounded-md my-3;
+}
+
+/* Compact variant for markdown embedded in cards (e.g. issue drafts) —
+   headings scale down so they don't outweigh the card's own title */
+.markdown-compact h1,
+.markdown-compact h2 {
+  @apply text-base font-semibold mt-4 mb-1.5 first:mt-0;
+}
+.markdown-compact h3,
+.markdown-compact h4 {
+  @apply text-sm font-semibold mt-3 mb-1 first:mt-0;
+}
+.markdown-compact p {
+  @apply mb-2;
+}
+.markdown-compact ul,
+.markdown-compact ol {
+  @apply mb-2;
+}
+
+/* GitHub task lists */
+.markdown li.task-list-item {
+  list-style: none;
+}
+.markdown li.task-list-item .task-checkbox {
+  margin: 0 0.4em 0 -1.3em;
+  vertical-align: middle;
+  accent-color: var(--primary);
 }

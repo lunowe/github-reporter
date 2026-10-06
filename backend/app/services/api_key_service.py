@@ -36,7 +36,7 @@ def _generate_key_string() -> str:
     return KEY_PREFIX + secrets.token_urlsafe(32)
 
 
-async def generate_api_key(user_id: str, name: str) -> tuple[dict, str]:
+async def generate_api_key(user_id: str, name: str, can_write: bool = False) -> tuple[dict, str]:
     """
     Create a new API key for a user.
 
@@ -52,6 +52,10 @@ async def generate_api_key(user_id: str, name: str) -> tuple[dict, str]:
         "name": name.strip() or "Unbenannt",
         "key_hash": _hash_key(plaintext),
         "prefix": plaintext[:DISPLAY_PREFIX_LEN],
+        # Write scope (issue edits via MCP) is opt-in per key: issue text read
+        # through the same server could otherwise steer an auto-approving
+        # client into writes.
+        "can_write": can_write,
         "revoked": False,
         "created_at": now,
         "last_used_at": None,
@@ -62,9 +66,9 @@ async def generate_api_key(user_id: str, name: str) -> tuple[dict, str]:
     return doc, plaintext
 
 
-async def authenticate_api_key(plaintext: str) -> dict | None:
+async def authenticate_api_key(plaintext: str) -> tuple[dict, dict] | None:
     """
-    Resolve a plaintext API key to its owning user document.
+    Resolve a plaintext API key to (owning user document, key document).
 
     Returns None if the key is unknown or revoked. Bumps last_used_at on success.
     """
@@ -88,7 +92,7 @@ async def authenticate_api_key(plaintext: str) -> dict | None:
         {"_id": key_doc["_id"]},
         {"$set": {"last_used_at": datetime.now(timezone.utc)}},
     )
-    return user
+    return user, key_doc
 
 
 def _serialize(doc: dict) -> dict:
@@ -97,6 +101,7 @@ def _serialize(doc: dict) -> dict:
         "id": str(doc["_id"]),
         "name": doc.get("name", ""),
         "prefix": doc.get("prefix", ""),
+        "can_write": doc.get("can_write", False),
         "revoked": doc.get("revoked", False),
         "created_at": doc.get("created_at"),
         "last_used_at": doc.get("last_used_at"),

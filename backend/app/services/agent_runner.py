@@ -35,6 +35,7 @@ from pydantic_ai.usage import RunUsage
 
 from app.services.llm_factory import LLMConfig, build_llm
 from app.services.github_service import GitHubService
+from app.services.issue_tools import WRITE_INSTRUCTIONS, IssueWriteContext, build_issue_tools
 from app.tools.registry import GitHubTool, build_all_tools
 from app.utils import trunc, safe_serialize_kwargs
 
@@ -132,7 +133,10 @@ class AgentRunner:
         self,
         llm_config: LLMConfig,
         github_service: GitHubService,
+        write_context: Optional[IssueWriteContext] = None,
     ):
+        """`write_context` enables the issue-draft tools; omit it for read-only
+        callers (viewers, automations)."""
         self.github_service = github_service
         self.provider = llm_config.provider
         self.model = llm_config.model
@@ -141,6 +145,10 @@ class AgentRunner:
             today=date.today().isoformat(),
             repo=github_service.repo_full_name,
         )
+        tools = [_to_agent_tool(t) for t in build_all_tools(github_service)]
+        if write_context is not None:
+            system_prompt += WRITE_INSTRUCTIONS
+            tools += build_issue_tools(github_service, write_context)
 
         # Accumulates real provider token counts across every tool-calling turn
         # of a run — including runs that end in an error or a cancel.
@@ -149,7 +157,7 @@ class AgentRunner:
         self.agent = Agent(
             build_llm(llm_config),
             instructions=system_prompt,
-            tools=[_to_agent_tool(t) for t in build_all_tools(github_service)],
+            tools=tools,
             model_settings=(
                 ModelSettings(max_tokens=_ANTHROPIC_MAX_TOKENS)
                 if self.provider == "anthropic" else None

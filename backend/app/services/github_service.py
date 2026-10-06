@@ -32,6 +32,9 @@ _package_versions_cache: TTLCache = TTLCache(maxsize=128, ttl=300)
 
 GITHUB_API_BASE = "https://api.github.com"
 
+# Issue bodies are returned in full up to this size so the agent can edit them.
+ISSUE_BODY_LIMIT = 20_000
+
 
 class GitHubService:
     """Thin wrapper around PyGithub for a single repository."""
@@ -196,7 +199,8 @@ class GitHubService:
         return {
             "number": issue.number,
             "title": issue.title,
-            "body": trunc(issue.body, 500),
+            "body": trunc(issue.body, ISSUE_BODY_LIMIT),
+            "body_truncated": len(issue.body or "") > ISSUE_BODY_LIMIT,
             "state": issue.state,
             "author": issue.user.login if issue.user else "unknown",
             "assignees": [a.login for a in issue.assignees],
@@ -215,6 +219,70 @@ class GitHubService:
             ],
             "url": issue.html_url,
         }
+
+    # ── Issue writes ────────────────────────────────────────────────────
+
+    def get_issue_snapshot(self, issue_number: int) -> dict:
+        """Full, untruncated issue state — the baseline for edits and conflict checks."""
+        issue = self.repo.get_issue(issue_number)
+        return {
+            "number": issue.number,
+            "title": issue.title,
+            "body": issue.body or "",
+            "labels": [l.name for l in issue.labels],
+            "assignees": [a.login for a in issue.assignees],
+            "state": issue.state,
+            "html_url": issue.html_url,
+            "is_pull_request": issue.pull_request is not None,
+        }
+
+    def get_label_names(self) -> list[str]:
+        return [l.name for l in self.repo.get_labels()]
+
+    def is_assignable(self, login: str) -> bool:
+        return self.repo.has_in_assignees(login)
+
+    def create_issue(
+        self,
+        title: str,
+        body: str = "",
+        labels: Optional[list[str]] = None,
+        assignees: Optional[list[str]] = None,
+    ) -> dict:
+        issue = self.repo.create_issue(
+            title=title, body=body, labels=labels or [], assignees=assignees or [],
+        )
+        self._invalidate_issue_caches()
+        return {
+            "issue_number": issue.number,
+            "html_url": issue.html_url,
+            "labels": [l.name for l in issue.labels],
+            "assignees": [a.login for a in issue.assignees],
+        }
+
+    def update_issue(self, issue_number: int, **fields) -> dict:
+        """Edit an issue. Only the given fields (title, body, labels, assignees,
+        state, state_reason) are sent; everything else stays untouched."""
+        issue = self.repo.get_issue(issue_number)
+        issue.edit(**fields)
+        self._invalidate_issue_caches()
+        return {"issue_number": issue.number, "html_url": issue.html_url}
+
+    def add_issue_comment(self, issue_number: int, body: str) -> dict:
+        issue = self.repo.get_issue(issue_number)
+        comment = issue.create_comment(body)
+        self._invalidate_issue_caches()
+        return {
+            "issue_number": issue.number,
+            "html_url": issue.html_url,
+            "comment_url": comment.html_url,
+        }
+
+    def _invalidate_issue_caches(self) -> None:
+        """Drop cached reads for this repo so the agent sees its own writes."""
+        for cache in (_issues_cache, _summary_cache):
+            for key in [k for k in cache.keys() if k and k[0] == self.repo_full_name]:
+                cache.pop(key, None)
 
     # ── Actions / Workflow Runs ─────────────────────────────────────────
 

@@ -26,6 +26,8 @@ from app.redis_client import get_redis
 from app.services.llm_factory import LLMConfig, LLMUnavailableError, infer_provider
 from app.services.github_service import GitHubService
 from app.services.agent_runner import AgentRunner
+from app.services.issue_actions import can_write
+from app.services.issue_tools import IssueWriteContext
 from app.services.token_resolver import resolve_github_token
 from app.services import chat_store, stream_manager, usage_service
 from app.services.stream_manager import (
@@ -134,8 +136,13 @@ async def chat(
                    "verschoben oder der Zugriff entzogen?",
         )
 
+    # Issue drafts are only offered to users who may write; chat_id is filled
+    # in below once the chat exists.
+    write_context = IssueWriteContext(user_id=user_id, chat_id=None) if can_write(user) else None
     try:
-        agent_runner = AgentRunner(llm_config=llm_config, github_service=github_service)
+        agent_runner = AgentRunner(
+            llm_config=llm_config, github_service=github_service, write_context=write_context,
+        )
     except LLMUnavailableError as e:
         logger.error("LLM unavailable for chat: %s", e)
         raise HTTPException(status_code=503, detail=str(e))
@@ -151,6 +158,8 @@ async def chat(
             chat_id=request.chat_id,
         )
         chat_id = chat_doc["chat_id"]
+    if write_context is not None:
+        write_context.chat_id = chat_id
 
     # Persist user message now so a crash before streaming doesn't lose it.
     await chat_store.append_messages(chat_id, user_id, [

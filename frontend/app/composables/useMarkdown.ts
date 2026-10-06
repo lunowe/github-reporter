@@ -31,42 +31,87 @@ hljs.registerLanguage("markdown", markdown);
 hljs.registerLanguage("md", markdown);
 hljs.registerLanguage("diff", diff);
 
-const md = new MarkdownIt({
-  html: false,
-  linkify: true,
-  typographer: true,
-  highlight(str: string, lang: string): string {
-    const escaped = md.utils.escapeHtml(str);
-    let highlighted: string;
+function createRenderer(options: { typographer: boolean }): MarkdownIt {
+  const md: MarkdownIt = new MarkdownIt({
+    // Never pass raw HTML through — issue bodies are untrusted input
+    html: false,
+    linkify: true,
+    typographer: options.typographer,
+    highlight(str: string, lang: string): string {
+      const escaped = md.utils.escapeHtml(str);
+      let highlighted: string;
 
-    if (lang && hljs.getLanguage(lang)) {
-      try {
-        highlighted = hljs.highlight(str, { language: lang }).value;
-      } catch {
+      if (lang && hljs.getLanguage(lang)) {
+        try {
+          highlighted = hljs.highlight(str, { language: lang }).value;
+        } catch {
+          highlighted = escaped;
+        }
+      } else {
         highlighted = escaped;
       }
-    } else {
-      highlighted = escaped;
-    }
 
-    const langLabel = lang ? md.utils.escapeHtml(lang) : "";
-    return (
-      `<div class="code-block">` +
-      `<div class="code-block-header">` +
-      `<span class="code-lang">${langLabel}</span>` +
-      `<button class="copy-btn" onclick="navigator.clipboard.writeText(this.closest('.code-block').querySelector('code').textContent)">Kopieren</button>` +
-      `</div>` +
-      `<pre><code class="hljs${lang ? ` language-${langLabel}` : ""}">${highlighted}</code></pre>` +
-      `</div>`
-    );
-  },
-});
+      const langLabel = lang ? md.utils.escapeHtml(lang) : "";
+      return (
+        `<div class="code-block">` +
+        `<div class="code-block-header">` +
+        `<span class="code-lang">${langLabel}</span>` +
+        `<button class="copy-btn" onclick="navigator.clipboard.writeText(this.closest('.code-block').querySelector('code').textContent)">Kopieren</button>` +
+        `</div>` +
+        `<pre><code class="hljs${lang ? ` language-${langLabel}` : ""}">${highlighted}</code></pre>` +
+        `</div>`
+      );
+    },
+  });
+
+  // GitHub task lists ("- [ ] todo" / "- [x] done") → read-only checkboxes.
+  // Common in issue bodies (acceptance criteria), which the chat renders.
+  md.core.ruler.after("inline", "task_lists", (state) => {
+    const tokens = state.tokens;
+    for (let i = 2; i < tokens.length; i++) {
+      const inline = tokens[i]!;
+      if (
+        inline.type !== "inline" ||
+        tokens[i - 1]!.type !== "paragraph_open" ||
+        tokens[i - 2]!.type !== "list_item_open"
+      ) {
+        continue;
+      }
+      const first = inline.children?.[0];
+      const match = first?.type === "text" ? /^\[([ xX])\]\s+/.exec(first.content) : null;
+      if (!first || !match) continue;
+
+      first.content = first.content.slice(match[0].length);
+      const box = new state.Token("html_inline", "", 0);
+      box.content = `<input type="checkbox" class="task-checkbox" disabled${match[1] === " " ? "" : " checked"}> `;
+      inline.children!.unshift(box);
+      tokens[i - 2]!.attrJoin("class", "task-list-item");
+    }
+  });
+
+  return md;
+}
+
+/** Assistant prose: smart quotes and dashes make chat answers read nicely. */
+const prose = createRenderer({ typographer: true });
+
+/**
+ * Content that will be (or is) on GitHub: issue bodies, comments. GitHub
+ * doesn't replace quotes or dashes, so neither does this renderer — the
+ * preview must show exactly what gets written.
+ */
+const github = createRenderer({ typographer: false });
 
 export function useMarkdown() {
   function render(text: string): string {
     if (!text) return "";
-    return md.render(text);
+    return prose.render(text);
   }
 
-  return { render };
+  function renderGithub(text: string): string {
+    if (!text) return "";
+    return github.render(text);
+  }
+
+  return { render, renderGithub };
 }
