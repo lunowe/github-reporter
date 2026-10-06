@@ -35,6 +35,7 @@ If you need a code or invite, ping me directly.
 | **Commits** | list/filter by date, author, branch |
 | **Pull requests** | open/closed PRs with full detail views |
 | **Issues** | list, filter, inspect with labels, assignees, comments |
+| **Issue editing** | draft new issues, edits (title, body, labels, assignees, close/reopen) and comments — applied only after you confirm the draft in the chat |
 | **CI/CD** | GitHub Actions workflow run status |
 | **Code browsing** | walk directories, read files |
 | **Branch comparison** | ahead/behind, changed files between two branches |
@@ -72,7 +73,7 @@ The GitHub tools are also exposed as an [MCP](https://modelcontextprotocol.io) s
 
 On Claude.ai, add a custom **Connector** with the same URL and `Authorization` header.
 
-**3. Call tools.** Every tool takes a `repo` argument (`owner/repo`) plus its own parameters — e.g. `get_repo_summary`, `get_commits`, `list_pull_requests`, `list_issues`, `get_workflow_runs`, `browse_directory`, `read_file`, `compare_branches`, `search_code`, and the GHCR container tools. Keys can be revoked anytime from the same settings page.
+**3. Call tools.** Every tool takes a `repo` argument (`owner/repo`) plus its own parameters — e.g. `get_repo_summary`, `get_commits`, `list_pull_requests`, `list_issues`, `get_workflow_runs`, `browse_directory`, `read_file`, `compare_branches`, `search_code`, and the GHCR container tools. Write tools `create_issue`, `update_issue` and `add_issue_comment` execute directly (your MCP client asks you to approve each call). They only work with keys created with **Schreibzugriff** enabled, and never for read-only viewer accounts. Keys can be revoked anytime from the same settings page.
 
 > **Hosting note.** `/mcp` lives on the backend and is proxied through the frontend (`server/routes/mcp/[...path].ts` → `NUXT_BACKEND_URL`), so it shares the app's public domain. If you instead expose the backend service directly, point clients at `https://<backend-host>/mcp/`.
 
@@ -113,7 +114,7 @@ The production deployment runs on Railway; for local development the simplest pa
 
 **Prerequisites**
 - Docker + docker-compose
-- A [GitHub App](https://github.com/settings/apps) (OAuth enabled, installed on the repos you want to query)
+- A [GitHub App](https://github.com/settings/apps) (OAuth enabled, installed on the repos you want to query). Repository permissions: read access to contents, metadata, pull requests, actions, statuses and packages, plus **Issues: Read & write** for issue editing
 - At least one LLM API key (Gemini, OpenAI, or Anthropic)
 - *(Optional)* SMTP credentials if you want automations to send email
 

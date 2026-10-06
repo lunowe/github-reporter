@@ -13,6 +13,7 @@ import {
   ExternalLink,
   KeyRound,
   Copy,
+  PenLine,
 } from "lucide-vue-next";
 import { MODEL_OPTIONS } from "~/constants/models";
 import type { CreatedApiKey } from "~/composables/useApiKeys";
@@ -42,7 +43,11 @@ const {
 } = useApiKeys();
 
 const newKeyName = ref("");
+const newKeyWrite = ref(false);
 const creatingKey = ref(false);
+// Email (viewer) accounts can't write to GitHub at all, so a write scope
+// would be a promise the key can't keep — don't offer it.
+const canOfferWrite = computed(() => user.value?.auth_method !== "email");
 const keyError = ref<string | null>(null);
 // The plaintext of a just-created key — shown once, then cleared.
 const justCreatedKey = ref<CreatedApiKey | null>(null);
@@ -93,8 +98,12 @@ async function handleCreateKey() {
   keyError.value = null;
   creatingKey.value = true;
   try {
-    justCreatedKey.value = await createKey(newKeyName.value);
+    justCreatedKey.value = await createKey(
+      newKeyName.value,
+      canOfferWrite.value && newKeyWrite.value,
+    );
     newKeyName.value = "";
+    newKeyWrite.value = false;
   } catch (e: any) {
     keyError.value = e.data?.detail || e.message || "Fehler beim Erstellen";
   } finally {
@@ -445,13 +454,23 @@ watch(comboboxOpen, (open) => {
             <CardDescription>
               Schlüssel authentifizieren MCP-Clients (z.B. Claude Desktop) gegenüber
               diesem Dienst. Sie handeln in deinem Namen – mit deinem GitHub-Zugang
-              und deinen Repository-Berechtigungen.
+              und deinen Repository-Berechtigungen. Standardmäßig können sie nur lesen.
             </CardDescription>
           </CardHeader>
           <CardContent class="space-y-4">
             <!-- One-time reveal of a freshly created key -->
             <Alert v-if="justCreatedKey" class="border-primary/40">
-              <AlertTitle class="text-sm">Neuer Schlüssel erstellt</AlertTitle>
+              <AlertTitle class="flex items-center gap-2 text-sm">
+                Neuer Schlüssel erstellt
+                <Badge
+                  variant="outline"
+                  class="px-1.5 py-0 text-[10px] font-normal"
+                  :class="justCreatedKey.can_write ? 'border-primary/40' : ''"
+                >
+                  <PenLine v-if="justCreatedKey.can_write" />
+                  {{ justCreatedKey.can_write ? "Lesen & Schreiben" : "Lesen" }}
+                </Badge>
+              </AlertTitle>
               <AlertDescription class="space-y-2">
                 <p class="text-xs text-muted-foreground">
                   Kopiere ihn jetzt – er wird nur dieses eine Mal angezeigt.
@@ -480,8 +499,16 @@ watch(comboboxOpen, (open) => {
               class="flex items-center justify-between rounded-md border px-3 py-2"
             >
               <div class="min-w-0">
-                <div class="flex items-center gap-2">
+                <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <span class="text-sm font-medium truncate">{{ key.name }}</span>
+                  <Badge
+                    variant="outline"
+                    class="px-1.5 py-0 text-[10px] font-normal"
+                    :class="key.can_write ? 'border-primary/40' : 'text-muted-foreground'"
+                  >
+                    <PenLine v-if="key.can_write" />
+                    {{ key.can_write ? "Lesen & Schreiben" : "Lesen" }}
+                  </Badge>
                   <Badge v-if="key.revoked" variant="destructive" class="text-xs">
                     Widerrufen
                   </Badge>
@@ -515,20 +542,38 @@ watch(comboboxOpen, (open) => {
             <Separator />
 
             <!-- Create key -->
-            <div class="space-y-2">
-              <Label class="text-sm">Neuen Schlüssel erstellen</Label>
-              <div class="flex items-center gap-2">
-                <Input
-                  v-model="newKeyName"
-                  placeholder="Bezeichnung, z.B. Claude Desktop"
-                  class="flex-1"
-                  @keyup.enter="handleCreateKey"
-                />
-                <Button :disabled="creatingKey" class="gap-1.5" @click="handleCreateKey">
-                  <Loader2 v-if="creatingKey" class="h-4 w-4 animate-spin" />
-                  <Plus v-else class="h-4 w-4" />
-                  Erstellen
-                </Button>
+            <div class="space-y-3">
+              <div class="space-y-2">
+                <Label for="new-key-name" class="text-sm">Neuen Schlüssel erstellen</Label>
+                <div class="flex items-center gap-2">
+                  <Input
+                    id="new-key-name"
+                    v-model="newKeyName"
+                    placeholder="Bezeichnung, z.B. Claude Desktop"
+                    class="flex-1"
+                    @keyup.enter="handleCreateKey"
+                  />
+                  <Button :disabled="creatingKey" class="gap-1.5" @click="handleCreateKey">
+                    <Loader2 v-if="creatingKey" class="h-4 w-4 animate-spin" />
+                    <Plus v-else class="h-4 w-4" />
+                    Erstellen
+                  </Button>
+                </div>
+              </div>
+
+              <!-- Write scope — off by default, opt-in with an explanation -->
+              <div
+                v-if="canOfferWrite"
+                class="flex items-start gap-3 rounded-md border px-3 py-2.5"
+              >
+                <Switch id="new-key-write" v-model="newKeyWrite" class="mt-0.5" />
+                <div class="space-y-0.5">
+                  <Label for="new-key-write" class="text-sm">Schreibzugriff</Label>
+                  <p class="text-xs text-muted-foreground">
+                    Erlaubt dem MCP-Client, Issues anzulegen, zu bearbeiten und zu
+                    kommentieren. Nur aktivieren, wenn du das brauchst.
+                  </p>
+                </div>
               </div>
               <Alert v-if="keyError" variant="destructive" class="text-xs">
                 <AlertDescription>{{ keyError }}</AlertDescription>

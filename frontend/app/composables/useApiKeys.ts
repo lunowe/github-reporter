@@ -10,6 +10,8 @@ export interface ApiKey {
   name: string;
   prefix: string;
   revoked: boolean;
+  /** Whether MCP write tools (create/update/comment on issues) are allowed. */
+  can_write: boolean;
   created_at: string | null;
   last_used_at: string | null;
 }
@@ -35,16 +37,20 @@ export function useApiKeys() {
     }
   }
 
-  async function createKey(name: string): Promise<CreatedApiKey> {
+  async function createKey(
+    name: string,
+    canWrite = false,
+  ): Promise<CreatedApiKey> {
     const created = await apiFetch<CreatedApiKey>("/api/api-keys", {
       method: "POST",
-      body: { name },
+      body: { name, can_write: canWrite },
     });
     keys.value.unshift({
       id: created.id,
       name: created.name,
       prefix: created.prefix,
       revoked: false,
+      can_write: !!created.can_write,
       created_at: created.created_at,
       last_used_at: null,
     });
@@ -54,7 +60,7 @@ export function useApiKeys() {
   async function revokeKey(id: string) {
     await apiFetch(`/api/api-keys/${id}`, { method: "DELETE" });
     const idx = keys.value.findIndex((k) => k.id === id);
-    if (idx >= 0) keys.value[idx].revoked = true;
+    if (idx >= 0) keys.value[idx]!.revoked = true;
   }
 
   return { keys, loading, fetchKeys, createKey, revokeKey };

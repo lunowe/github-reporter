@@ -30,11 +30,14 @@ async def create_api_key(
     doc, plaintext = await api_key_service.generate_api_key(
         user_id=str(user["_id"]),
         name=body.name,
+        # Viewers can never write; don't mint keys that look like they could.
+        can_write=body.can_write and user.get("auth_method", "github") == "github",
     )
     return {
         "id": str(doc["_id"]),
         "name": doc["name"],
         "prefix": doc["prefix"],
+        "can_write": doc["can_write"],
         "key": plaintext,  # shown only here, never again
         "created_at": doc["created_at"],
     }

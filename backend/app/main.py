@@ -22,6 +22,7 @@ from app.routes.invites import router as invites_router
 from app.routes.admin import router as admin_router
 from app.routes.automations import router as automations_router
 from app.routes.api_keys import router as api_keys_router
+from app.routes.issue_actions import router as issue_actions_router
 from app.mcp_server import create_mcp_app
 
 logging.basicConfig(
@@ -52,6 +53,7 @@ async def lifespan(app: FastAPI):
     from app.services.automations_store import ensure_indexes as automations_indexes
     from app.services.usage_service import ensure_indexes as usage_indexes
     from app.services.api_key_service import ensure_indexes as api_key_indexes
+    from app.services.issue_actions import ensure_indexes as issue_action_indexes
     from app.services.scheduler import start_scheduler, shutdown_scheduler
     from app.services import stream_manager
 
@@ -63,6 +65,7 @@ async def lifespan(app: FastAPI):
     await automations_indexes()
     await usage_indexes()
     await api_key_indexes()
+    await issue_action_indexes()
 
     # Migrate existing users to have activation fields
     await migrate_existing_users()
@@ -115,6 +118,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_router)
     app.include_router(automations_router)
     app.include_router(api_keys_router)
+    app.include_router(issue_actions_router)
 
     # MCP server over Streamable HTTP. Clients connect to /mcp/ with a personal
     # API key (Authorization: Bearer ghr_...). Its session manager is driven by

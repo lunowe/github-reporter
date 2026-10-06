@@ -55,6 +55,7 @@ class AccessCodeRedeem(BaseModel):
 
 class ApiKeyCreate(BaseModel):
     name: str = Field(default="", description="Bezeichnung des Schlüssels, z.B. 'Claude Desktop'")
+    can_write: bool = Field(default=False, description="Erlaubt Issues anzulegen/zu bearbeiten (MCP)")
 
 
 # ── Invites ────────────────────────────────────────────────────────────

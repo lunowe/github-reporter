@@ -1,6 +1,18 @@
 <script setup lang="ts">
-import { User, Bot, ChevronDown, ChevronRight, Loader2 } from "lucide-vue-next";
-import type { ChatMessage } from "~/types/chat";
+import {
+  User,
+  Bot,
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  XCircle,
+} from "lucide-vue-next";
+import type { ChatMessage, ToolCallState } from "~/types/chat";
+import {
+  ISSUE_ACTION_TOOLS,
+  issueActionFailureFromToolCall,
+  issueActionIdFromToolCall,
+} from "~/composables/useIssueActions";
 
 const { render: renderMarkdown } = useMarkdown();
 
@@ -42,7 +54,19 @@ const TOOL_LABELS: Record<string, string> = {
   get_container_image_tags: "Image-Tags abrufen",
   get_container_image_details: "Image-Details abrufen",
   find_image_for_commit: "Image für Commit finden",
+  propose_create_issue: "Issue-Entwurf erstellen",
+  propose_update_issue: "Issue-Änderung entwerfen",
+  propose_issue_comment: "Kommentar-Entwurf erstellen",
 };
+
+// Propose tools get a friendlier label while the draft is being stored;
+// once done they render as an IssueActionCard instead of a row.
+function toolLabel(tc: ToolCallState): string {
+  if (ISSUE_ACTION_TOOLS.has(tc.name) && tc.status === "running") {
+    return "Entwurf wird vorbereitet…";
+  }
+  return TOOL_LABELS[tc.name] || tc.name;
+}
 
 // Finished messages (error/cancelled/complete) never show a spinner, even when empty
 const isFinished = computed(() =>
@@ -88,49 +112,84 @@ const isThinkingAfterTools = computed(() => {
 
       <!-- Tool calls -->
       <div v-if="!isUser && message.toolCalls?.length" class="space-y-1">
-        <div
-          v-for="(tc, idx) in message.toolCalls"
-          :key="idx"
-          class="rounded-md border bg-muted/50 text-xs"
-        >
-          <button
-            class="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted/80"
-            @click="toggleTool(idx)"
-          >
-            <Loader2
-              v-if="tc.status === 'running'"
-              class="h-3 w-3 animate-spin text-muted-foreground"
-            />
-            <component
-              :is="expandedTools.has(idx) ? ChevronDown : ChevronRight"
-              v-else
-              class="h-3 w-3 text-muted-foreground"
-            />
-            <span class="font-medium">
-              {{ TOOL_LABELS[tc.name] || tc.name }}
-            </span>
-            <Badge
-              v-if="tc.status === 'done'"
-              variant="secondary"
-              class="ml-auto text-[10px] px-1.5 py-0"
-            >
-              fertig
-            </Badge>
-          </button>
+        <template v-for="(tc, idx) in message.toolCalls" :key="idx">
+          <!-- Stored issue draft → confirmation card -->
+          <IssueActionCard
+            v-if="issueActionIdFromToolCall(tc)"
+            :action-id="issueActionIdFromToolCall(tc)!"
+            class="my-1"
+          />
 
-          <Collapsible :open="expandedTools.has(idx)">
-            <CollapsibleContent>
-              <div class="border-t px-3 py-2">
-                <pre
-                  v-if="tc.output"
-                  class="max-h-48 overflow-auto whitespace-pre-wrap text-[11px] text-muted-foreground"
-                  >{{ tc.output }}</pre
-                >
-                <span v-else class="text-muted-foreground">Läuft...</span>
-              </div>
-            </CollapsibleContent>
-          </Collapsible>
-        </div>
+          <!-- Propose tool finished without a draft: say why, in place of the card -->
+          <div
+            v-else-if="issueActionFailureFromToolCall(tc)"
+            class="rounded-md border border-destructive/30 bg-muted/50 text-xs"
+          >
+            <div class="flex items-center gap-2 px-3 py-1.5">
+              <XCircle class="h-3 w-3 shrink-0 text-destructive" />
+              <span class="font-medium">{{ toolLabel(tc) }}</span>
+              <Badge
+                variant="outline"
+                class="ml-auto shrink-0 border-destructive/40 px-1.5 py-0 text-[10px] text-destructive"
+              >
+                nicht erstellt
+              </Badge>
+            </div>
+            <p class="border-t px-3 py-1.5 text-muted-foreground [overflow-wrap:anywhere]">
+              {{ issueActionFailureFromToolCall(tc) }}
+            </p>
+          </div>
+
+          <div
+            v-else
+            class="rounded-md border bg-muted/50 text-xs"
+          >
+            <button
+              class="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted/80"
+              @click="toggleTool(idx)"
+            >
+              <Loader2
+                v-if="tc.status === 'running'"
+                class="h-3 w-3 animate-spin text-muted-foreground"
+              />
+              <component
+                :is="expandedTools.has(idx) ? ChevronDown : ChevronRight"
+                v-else
+                class="h-3 w-3 text-muted-foreground"
+              />
+              <span class="font-medium">
+                {{ toolLabel(tc) }}
+              </span>
+              <Badge
+                v-if="tc.status === 'done'"
+                variant="secondary"
+                class="ml-auto text-[10px] px-1.5 py-0"
+              >
+                fertig
+              </Badge>
+              <Badge
+                v-else-if="tc.status === 'error'"
+                variant="outline"
+                class="ml-auto border-destructive/40 px-1.5 py-0 text-[10px] text-destructive"
+              >
+                Fehler
+              </Badge>
+            </button>
+
+            <Collapsible :open="expandedTools.has(idx)">
+              <CollapsibleContent>
+                <div class="border-t px-3 py-2">
+                  <pre
+                    v-if="tc.output"
+                    class="max-h-48 overflow-auto whitespace-pre-wrap text-[11px] text-muted-foreground"
+                    >{{ tc.output }}</pre
+                  >
+                  <span v-else class="text-muted-foreground">Läuft...</span>
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
+          </div>
+        </template>
       </div>
 
       <!-- Thinking indicator after tool calls complete -->
