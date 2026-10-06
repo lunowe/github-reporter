@@ -86,7 +86,7 @@ async def _run(tool_name: str, repo: str, **params) -> str:
     def _work() -> str:
         service = GitHubService(token=token, repo_full_name=repo)
         for tool in build_all_tools(service):
-            if tool.metadata.name == tool_name:
+            if tool.name == tool_name:
                 return str(tool.fn(**params))
         raise ToolError(f"Unbekanntes Tool: {tool_name}")
 

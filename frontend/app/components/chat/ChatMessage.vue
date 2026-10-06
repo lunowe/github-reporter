@@ -44,14 +44,23 @@ const TOOL_LABELS: Record<string, string> = {
   find_image_for_commit: "Image für Commit finden",
 };
 
+// Finished messages (error/cancelled/complete) never show a spinner, even when empty
+const isFinished = computed(() =>
+  ["error", "cancelled", "complete"].includes(props.message.status ?? ""),
+);
+
 // True when the assistant message is still empty (waiting for first token or tool call)
 const isThinking = computed(
-  () => !isUser.value && !props.message.content && !props.message.toolCalls?.length,
+  () =>
+    !isUser.value &&
+    !isFinished.value &&
+    !props.message.content &&
+    !props.message.toolCalls?.length,
 );
 
 // True when all tool calls are done but the assistant hasn't started responding with text yet
 const isThinkingAfterTools = computed(() => {
-  if (isUser.value || props.message.content) return false;
+  if (isUser.value || isFinished.value || props.message.content) return false;
   const calls = props.message.toolCalls;
   if (!calls?.length) return false;
   return calls.every((tc) => tc.status === "done" || tc.status === "error");

@@ -6,15 +6,14 @@ Tools: browse_directory + read_file – navigate and read repository code.
 from typing import Optional
 
 from pydantic import BaseModel, Field
-from llama_index.core.tools import FunctionTool
 
-from app.tools.registry import register_tool
+from app.tools.registry import GitHubTool, register_tool
 from app.services.github_service import GitHubService
 from app.utils import to_tool_output
 
 
 @register_tool("browse_directory")
-def create_browse_directory_tool(github_service: GitHubService, **kwargs) -> FunctionTool:
+def create_browse_directory_tool(github_service: GitHubService, **kwargs) -> GitHubTool:
 
     class BrowseDirectorySchema(BaseModel):
         path: str = Field(
@@ -35,7 +34,7 @@ def create_browse_directory_tool(github_service: GitHubService, **kwargs) -> Fun
             return "Verzeichnis ist leer oder existiert nicht."
         return to_tool_output(result)
 
-    return FunctionTool.from_defaults(
+    return GitHubTool(
         fn=browse_directory,
         name="browse_directory",
         description=(
@@ -43,12 +42,12 @@ def create_browse_directory_tool(github_service: GitHubService, **kwargs) -> Fun
             "Nutze dieses Tool, um die Projektstruktur zu erkunden. "
             "Beginne mit path='' für das Wurzelverzeichnis und navigiere dann tiefer."
         ),
-        fn_schema=BrowseDirectorySchema,
+        schema=BrowseDirectorySchema,
     )
 
 
 @register_tool("read_file")
-def create_read_file_tool(github_service: GitHubService, **kwargs) -> FunctionTool:
+def create_read_file_tool(github_service: GitHubService, **kwargs) -> GitHubTool:
 
     class ReadFileSchema(BaseModel):
         path: str = Field(
@@ -83,7 +82,7 @@ def create_read_file_tool(github_service: GitHubService, **kwargs) -> FunctionTo
             return f"Fehler: {result['error']}"
         return to_tool_output(result)
 
-    return FunctionTool.from_defaults(
+    return GitHubTool(
         fn=read_file,
         name="read_file",
         description=(
@@ -92,5 +91,5 @@ def create_read_file_tool(github_service: GitHubService, **kwargs) -> FunctionTo
             "Bei großen Dateien kannst du einen Zeilenbereich angeben (z.B. start_line=100, end_line=200). "
             "Maximal 500 Zeilen pro Anfrage."
         ),
-        fn_schema=ReadFileSchema,
+        schema=ReadFileSchema,
     )

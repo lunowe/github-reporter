@@ -2,7 +2,7 @@
 
 An AI assistant for project managers and team leads who need a clear view of what's happening across their GitHub repositories — without reading every PR, commit, or pipeline run themselves. Ask in natural language, get answers grounded in live repository data.
 
-Built with a **FastAPI** backend, **Nuxt 4** frontend, and **LlamaIndex** agents that can talk to Google Gemini, OpenAI, or Anthropic Claude.
+Built with a **FastAPI** backend, **Nuxt 4** frontend, and **Pydantic AI** agents that can talk to Google Gemini, OpenAI, or Anthropic Claude.
 
 > The UI and agent responses are in **German** — the target audience is German-speaking PMs and team leads.
 
@@ -180,7 +180,7 @@ See `backend/.env.example` for the full list of environment variables (SMTP, sch
 | Layer | |
 |---|---|
 | Frontend | Nuxt 4, Vue 3, TypeScript, TailwindCSS, shadcn-nuxt |
-| Backend | FastAPI, Python 3.11, LlamaIndex, PyGithub, APScheduler, FastMCP |
+| Backend | FastAPI, Python 3.11, Pydantic AI, PyGithub, APScheduler, FastMCP |
 | Data | MongoDB (state), Redis (streaming + cancel pub/sub) |
 | LLMs | Google Gemini, OpenAI, Anthropic Claude |
 | Hosting | Railway (production), Docker Compose (local) |

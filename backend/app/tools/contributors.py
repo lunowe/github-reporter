@@ -4,15 +4,14 @@ Tool: get_contributors – list contributors ranked by commit count.
 """
 
 from pydantic import BaseModel, Field
-from llama_index.core.tools import FunctionTool
 
-from app.tools.registry import register_tool
+from app.tools.registry import GitHubTool, register_tool
 from app.services.github_service import GitHubService
 from app.utils import to_tool_output
 
 
 @register_tool("get_contributors")
-def create_get_contributors_tool(github_service: GitHubService, **kwargs) -> FunctionTool:
+def create_get_contributors_tool(github_service: GitHubService, **kwargs) -> GitHubTool:
 
     class GetContributorsSchema(BaseModel):
         limit: int = Field(
@@ -27,7 +26,7 @@ def create_get_contributors_tool(github_service: GitHubService, **kwargs) -> Fun
             return "Keine Contributors gefunden."
         return to_tool_output(result)
 
-    return FunctionTool.from_defaults(
+    return GitHubTool(
         fn=get_contributors,
         name="get_contributors",
         description=(
@@ -35,5 +34,5 @@ def create_get_contributors_tool(github_service: GitHubService, **kwargs) -> Fun
             "Nutze dieses Tool, um zu sehen, wer am meisten beigetragen hat, "
             "wer aktiv ist, oder um einen Überblick über das Team zu bekommen."
         ),
-        fn_schema=GetContributorsSchema,
+        schema=GetContributorsSchema,
     )

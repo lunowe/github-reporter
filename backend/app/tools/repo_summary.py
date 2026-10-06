@@ -4,15 +4,14 @@ Tool: get_repo_summary – high-level repository overview.
 """
 
 from pydantic import BaseModel
-from llama_index.core.tools import FunctionTool
 
-from app.tools.registry import register_tool
+from app.tools.registry import GitHubTool, register_tool
 from app.services.github_service import GitHubService
 from app.utils import to_tool_output
 
 
 @register_tool("get_repo_summary")
-def create_repo_summary_tool(github_service: GitHubService, **kwargs) -> FunctionTool:
+def create_repo_summary_tool(github_service: GitHubService, **kwargs) -> GitHubTool:
 
     class RepoSummarySchema(BaseModel):
         pass  # No parameters – aggregates everything
@@ -21,7 +20,7 @@ def create_repo_summary_tool(github_service: GitHubService, **kwargs) -> Functio
         summary = github_service.get_repo_summary()
         return to_tool_output(summary)
 
-    return FunctionTool.from_defaults(
+    return GitHubTool(
         fn=get_repo_summary,
         name="get_repo_summary",
         description=(
@@ -29,5 +28,5 @@ def create_repo_summary_tool(github_service: GitHubService, **kwargs) -> Functio
             "Anzahl offener PRs und Issues, Branches, letzter Commit, CI-Status und mehr. "
             "Nutze dieses Tool als Einstieg, um den aktuellen Projektstatus zu verstehen."
         ),
-        fn_schema=RepoSummarySchema,
+        schema=RepoSummarySchema,
     )

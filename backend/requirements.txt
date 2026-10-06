@@ -8,11 +8,8 @@ pydantic-settings
 # GitHub
 PyGithub
 
-# LlamaIndex – agent + LLM providers
-llama-index-core
-llama-index-llms-google-genai
-llama-index-llms-openai
-llama-index-llms-anthropic
+# Pydantic AI – agent + LLM providers (Gemini, OpenAI, Anthropic)
+pydantic-ai-slim[google,openai,anthropic]>=2.54,<3
 
 # MCP — exposes the GitHub tools over Streamable HTTP to external MCP clients
 fastmcp

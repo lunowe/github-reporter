@@ -20,6 +20,7 @@ from typing import Iterable, Literal
 
 from app.db import get_db
 from app.services import pricing, plans
+from app.services.llm_factory import infer_provider, normalize_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -386,6 +387,10 @@ async def check_limit(
     }
 
 
+def _normalize_model(model: str) -> str:
+    return normalize_model_name(infer_provider(model), model)
+
+
 async def check_run_allowed(
     user: dict,
     *,
@@ -412,8 +417,10 @@ async def check_run_allowed(
             "message": "Dein Konto wurde gesperrt. Bitte kontaktiere den Administrator.",
         }
 
-    allowed_models = user.get("allowed_models") or []
-    if allowed_models and model not in allowed_models:
+    # Compare normalized ids so legacy entries ("claude-sonnet-4.6") and the
+    # corrected ones ("claude-sonnet-4-6") match each other.
+    allowed_models = {_normalize_model(m) for m in user.get("allowed_models") or []}
+    if allowed_models and _normalize_model(model) not in allowed_models:
         return {
             "allowed": False,
             "status": 403,

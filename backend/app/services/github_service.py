@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import urllib.parse
+from itertools import islice
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -72,7 +73,7 @@ class GitHubService:
 
         commits_raw = self.repo.get_commits(**kwargs)
         result: list[dict] = []
-        for c in commits_raw[:limit]:
+        for c in islice(commits_raw, limit):
             if author and c.author and c.author.login != author:
                 continue
             result.append({
@@ -99,7 +100,7 @@ class GitHubService:
 
         prs = self.repo.get_pulls(state=state, sort="updated", direction="desc")
         result: list[dict] = []
-        for pr in prs[:limit]:
+        for pr in islice(prs, limit):
             result.append({
                 "number": pr.number,
                 "title": trunc(pr.title, 120),
@@ -138,7 +139,7 @@ class GitHubService:
             "additions": pr.additions,
             "deletions": pr.deletions,
             "changed_files": pr.changed_files,
-            "files": [{"name": f.filename, "status": f.status, "changes": f.changes} for f in files[:30]],
+            "files": [{"name": f.filename, "status": f.status, "changes": f.changes} for f in islice(files, 30)],
             "reviews": [
                 {"user": r.user.login, "state": r.state, "submitted_at": r.submitted_at.isoformat() if r.submitted_at else None}
                 for r in reviews
@@ -169,7 +170,7 @@ class GitHubService:
 
         issues_raw = self.repo.get_issues(**kwargs)
         result: list[dict] = []
-        for issue in issues_raw[:limit]:
+        for issue in islice(issues_raw, limit):
             # Skip pull requests (GitHub API returns them as issues too)
             if issue.pull_request:
                 continue
@@ -210,7 +211,7 @@ class GitHubService:
                     "body": trunc(c.body, 300),
                     "created_at": c.created_at.isoformat(),
                 }
-                for c in comments[:20]
+                for c in islice(comments, 20)
             ],
             "url": issue.html_url,
         }
@@ -232,7 +233,7 @@ class GitHubService:
 
         runs = self.repo.get_workflow_runs(**kwargs)
         result: list[dict] = []
-        for run in runs[:limit]:
+        for run in islice(runs, limit):
             result.append({
                 "id": run.id,
                 "name": run.name,
@@ -259,13 +260,13 @@ class GitHubService:
         open_prs = self.repo.get_pulls(state="open")
         open_issues = self.repo.get_issues(state="open")
         # Filter out PRs from issue count
-        issue_count = sum(1 for i in open_issues[:100] if not i.pull_request)
+        issue_count = sum(1 for i in islice(open_issues, 100) if not i.pull_request)
 
         branches = list(self.repo.get_branches())
 
         recent_runs = self.repo.get_workflow_runs()
         latest_run = None
-        for run in recent_runs[:1]:
+        for run in islice(recent_runs, 1):
             latest_run = {
                 "name": run.name,
                 "status": run.status,
@@ -274,7 +275,7 @@ class GitHubService:
             }
 
         last_commit = None
-        for c in self.repo.get_commits()[:1]:
+        for c in islice(self.repo.get_commits(), 1):
             last_commit = {
                 "sha": c.sha[:8],
                 "message": trunc(c.commit.message, 120),
@@ -289,7 +290,7 @@ class GitHubService:
             "open_prs": open_prs.totalCount,
             "open_issues": issue_count,
             "branch_count": len(branches),
-            "branches": [b.name for b in branches[:20]],
+            "branches": [b.name for b in islice(branches, 20)],
             "last_commit": last_commit,
             "latest_ci_run": latest_run,
             "stars": self.repo.stargazers_count,
@@ -339,7 +340,7 @@ class GitHubService:
                     "avatar_url": c.avatar_url,
                     "contributions": c.contributions,
                 }
-                for c in contributors[:limit]
+                for c in islice(contributors, limit)
             ]
         except Exception:
             return []
@@ -349,7 +350,7 @@ class GitHubService:
         try:
             events = self.repo.get_events()
             result: list[dict] = []
-            for event in events[:50]:
+            for event in islice(events, 50):
                 entry = _format_event(event)
                 if entry:
                     result.append(entry)
@@ -472,7 +473,7 @@ class GitHubService:
             return {"error": str(e)}
 
         files_changed: list[dict] = []
-        for f in comparison.files[:50]:
+        for f in islice(comparison.files, 50):
             files_changed.append({
                 "filename": f.filename,
                 "status": f.status,  # added, removed, modified, renamed
@@ -495,7 +496,7 @@ class GitHubService:
                     "author": c.author.login if c.author else c.commit.author.name,
                     "date": c.commit.author.date.isoformat(),
                 }
-                for c in comparison.commits[:30]
+                for c in islice(comparison.commits, 30)
             ],
             "files_changed": len(comparison.files),
             "additions": sum(f.additions for f in comparison.files),
@@ -509,7 +510,7 @@ class GitHubService:
         """List contributors sorted by number of contributions."""
         contributors = self.repo.get_contributors()
         result: list[dict] = []
-        for c in contributors[:limit]:
+        for c in islice(contributors, limit):
             result.append({
                 "login": c.login,
                 "contributions": c.contributions,

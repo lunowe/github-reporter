@@ -89,18 +89,36 @@ async def _run_single_step(
     prompt: str,
     repo: str,
     model: str,
-) -> tuple[str, dict]:
+    automation_id: str,
+    run_id: str,
+    step_order: int,
+) -> str:
     """Build a fresh agent per step (repo varies), run it once, and return the
-    output alongside this step's token usage."""
+    output. Token usage is recorded even when the step fails partway — the
+    provider bills for every turn that completed."""
     provider = infer_provider(model)
-    llm_config = LLMConfig(provider=provider, model=model, temperature=1)
+    llm_config = LLMConfig(provider=provider, model=model)
 
     token = await resolve_github_token(user)
     github_service = GitHubService(token=token, repo_full_name=repo)
 
     runner = AgentRunner(llm_config=llm_config, github_service=github_service)
-    output = await runner.run_once(query=prompt)
-    return output, runner.usage()
+    status = "error"
+    try:
+        output = await runner.run_once(query=prompt)
+        status = "complete"
+        return output
+    finally:
+        await usage_service.record_usage(
+            user_id=str(user["_id"]),
+            kind="automation",
+            automation_id=automation_id,
+            run_id=run_id,
+            step_order=step_order,
+            repo=repo,
+            status=status,
+            **runner.usage(),
+        )
 
 
 async def execute_automation(
@@ -181,24 +199,17 @@ async def execute_automation(
 
         t0 = time.perf_counter()
         try:
-            output, step_usage = await _run_single_step(
+            output = await _run_single_step(
                 user=user,
                 prompt=resolved_prompt,
                 repo=repo,
                 model=model,
-            )
-            step_result["output"] = output
-            prior_outputs.append(output)
-            await usage_service.record_usage(
-                user_id=user_id,
-                kind="automation",
                 automation_id=automation_id,
                 run_id=run_id,
                 step_order=order,
-                repo=repo,
-                status="complete",
-                **step_usage,
             )
+            step_result["output"] = output
+            prior_outputs.append(output)
         except Exception as e:
             logger.exception("Automation %s step %d failed", automation_id, order)
             step_result["error"] = str(e)
