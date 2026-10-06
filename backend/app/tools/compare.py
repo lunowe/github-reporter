@@ -4,15 +4,14 @@ Tool: compare_branches – diff between two branches or commits.
 """
 
 from pydantic import BaseModel, Field
-from llama_index.core.tools import FunctionTool
 
-from app.tools.registry import register_tool
+from app.tools.registry import GitHubTool, register_tool
 from app.services.github_service import GitHubService
 from app.utils import to_tool_output
 
 
 @register_tool("compare_branches")
-def create_compare_branches_tool(github_service: GitHubService, **kwargs) -> FunctionTool:
+def create_compare_branches_tool(github_service: GitHubService, **kwargs) -> GitHubTool:
 
     class CompareBranchesSchema(BaseModel):
         base: str = Field(
@@ -36,7 +35,7 @@ def create_compare_branches_tool(github_service: GitHubService, **kwargs) -> Fun
             return f"Fehler: {result['error']}"
         return to_tool_output(result)
 
-    return FunctionTool.from_defaults(
+    return GitHubTool(
         fn=compare_branches,
         name="compare_branches",
         description=(
@@ -45,5 +44,5 @@ def create_compare_branches_tool(github_service: GitHubService, **kwargs) -> Fun
             "Nutze dieses Tool, um zu sehen, was sich zwischen zwei Branches geändert hat, "
             "z.B. 'Was ist in develop aber noch nicht in main?'."
         ),
-        fn_schema=CompareBranchesSchema,
+        schema=CompareBranchesSchema,
     )

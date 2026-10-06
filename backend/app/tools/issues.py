@@ -6,15 +6,14 @@ Tools: list_issues + get_issue_detail
 from typing import Optional
 
 from pydantic import BaseModel, Field
-from llama_index.core.tools import FunctionTool
 
-from app.tools.registry import register_tool
+from app.tools.registry import GitHubTool, register_tool
 from app.services.github_service import GitHubService
 from app.utils import to_tool_output
 
 
 @register_tool("issues")
-def create_issue_tools(github_service: GitHubService, **kwargs) -> list[FunctionTool]:
+def create_issue_tools(github_service: GitHubService, **kwargs) -> list[GitHubTool]:
 
     # ── list_issues ─────────────────────────────────────────────────────
 
@@ -51,14 +50,14 @@ def create_issue_tools(github_service: GitHubService, **kwargs) -> list[Function
             return f"Keine Issues mit Status '{state}' gefunden."
         return to_tool_output(issues)
 
-    list_issues_tool = FunctionTool.from_defaults(
+    list_issues_tool = GitHubTool(
         fn=list_issues,
         name="list_issues",
         description=(
             "Listet Issues nach Status, Labels oder Zuweisungen auf. "
             "Nutze dieses Tool, um offene Bugs, Feature-Requests oder zugewiesene Aufgaben zu finden."
         ),
-        fn_schema=ListIssuesSchema,
+        schema=ListIssuesSchema,
     )
 
     # ── get_issue_detail ────────────────────────────────────────────────
@@ -72,7 +71,7 @@ def create_issue_tools(github_service: GitHubService, **kwargs) -> list[Function
         detail = github_service.get_issue_detail(issue_number)
         return to_tool_output(detail)
 
-    issue_detail_tool = FunctionTool.from_defaults(
+    issue_detail_tool = GitHubTool(
         fn=get_issue_detail,
         name="get_issue_detail",
         description=(
@@ -80,7 +79,7 @@ def create_issue_tools(github_service: GitHubService, **kwargs) -> list[Function
             "einschließlich Beschreibung, Kommentare, Labels und Milestone. "
             "Nutze dieses Tool für Details zu einem bestimmten Issue."
         ),
-        fn_schema=IssueDetailSchema,
+        schema=IssueDetailSchema,
     )
 
     return [list_issues_tool, issue_detail_tool]

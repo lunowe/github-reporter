@@ -4,15 +4,14 @@ Tools: list_pull_requests + get_pr_detail
 """
 
 from pydantic import BaseModel, Field
-from llama_index.core.tools import FunctionTool
 
-from app.tools.registry import register_tool
+from app.tools.registry import GitHubTool, register_tool
 from app.services.github_service import GitHubService
 from app.utils import to_tool_output
 
 
 @register_tool("pull_requests")
-def create_pull_request_tools(github_service: GitHubService, **kwargs) -> list[FunctionTool]:
+def create_pull_request_tools(github_service: GitHubService, **kwargs) -> list[GitHubTool]:
 
     # ── list_pull_requests ──────────────────────────────────────────────
 
@@ -33,14 +32,14 @@ def create_pull_request_tools(github_service: GitHubService, **kwargs) -> list[F
             return f"Keine Pull Requests mit Status '{state}' gefunden."
         return to_tool_output(prs)
 
-    list_prs_tool = FunctionTool.from_defaults(
+    list_prs_tool = GitHubTool(
         fn=list_pull_requests,
         name="list_pull_requests",
         description=(
             "Listet Pull Requests nach Status auf (open/closed/all). "
             "Nutze dieses Tool, um einen Überblick über offene oder kürzlich geschlossene PRs zu bekommen."
         ),
-        fn_schema=ListPRsSchema,
+        schema=ListPRsSchema,
     )
 
     # ── get_pr_detail ───────────────────────────────────────────────────
@@ -54,7 +53,7 @@ def create_pull_request_tools(github_service: GitHubService, **kwargs) -> list[F
         detail = github_service.get_pr_detail(pr_number)
         return to_tool_output(detail)
 
-    pr_detail_tool = FunctionTool.from_defaults(
+    pr_detail_tool = GitHubTool(
         fn=get_pr_detail,
         name="get_pr_detail",
         description=(
@@ -62,7 +61,7 @@ def create_pull_request_tools(github_service: GitHubService, **kwargs) -> list[F
             "einschließlich geänderter Dateien, Reviews, CI-Status und Merge-Status. "
             "Nutze dieses Tool, wenn nach einem bestimmten PR gefragt wird."
         ),
-        fn_schema=PRDetailSchema,
+        schema=PRDetailSchema,
     )
 
     return [list_prs_tool, pr_detail_tool]

@@ -1,16 +1,20 @@
 # app/services/llm_factory.py
 """
-Simplified LLM Factory – adapted from chatforen.
-Supports Gemini, OpenAI, and Anthropic via LlamaIndex.
+LLM factory – maps our (provider, model) pair onto a Pydantic AI model.
+Supports Gemini, OpenAI, and Anthropic.
 """
 
-from typing import Optional, Any
+import logging
 from dataclasses import dataclass
 
-from llama_index.llms.google_genai import GoogleGenAI
-from llama_index.llms.openai import OpenAI as OpenAILLM
-from llama_index.llms.anthropic import Anthropic
-import google.genai.types as types
+from pydantic_ai.exceptions import UserError
+from pydantic_ai.models import Model, infer_model
+
+logger = logging.getLogger(__name__)
+
+
+class LLMUnavailableError(Exception):
+    """The requested model can't be used (unknown provider, missing API key…)."""
 
 
 @dataclass
@@ -18,9 +22,14 @@ class LLMConfig:
     """Configuration for building an LLM instance."""
     provider: str
     model: str
-    system_prompt: str = ""
-    temperature: float = 1.0
-    max_tokens: Optional[int] = None
+
+
+# Our provider names → Pydantic AI model-string prefixes.
+_PROVIDER_PREFIX = {
+    "gemini": "google",
+    "openai": "openai",
+    "anthropic": "anthropic",
+}
 
 
 def infer_provider(model_name: str) -> str:
@@ -35,44 +44,31 @@ def infer_provider(model_name: str) -> str:
     return "gemini"
 
 
-def build_llm(config: LLMConfig) -> Any:
-    """Build an LLM instance from configuration."""
-    provider = config.provider
-
-    if provider == "gemini":
-        return _build_gemini(config)
-    if provider == "openai":
-        return _build_openai(config)
+def normalize_model_name(provider: str, model: str) -> str:
+    """
+    Fix up legacy model ids stored on existing chats/automations.
+    Anthropic ids use hyphens ("claude-sonnet-4-6"); the UI used to send
+    dotted versions ("claude-sonnet-4.6"), which the API rejects.
+    """
     if provider == "anthropic":
-        return _build_anthropic(config)
-
-    raise ValueError(f"Unknown provider: {provider}")
-
-
-def _build_gemini(config: LLMConfig) -> GoogleGenAI:
-    return GoogleGenAI(
-        model=config.model,
-        max_tokens=config.max_tokens,
-        generation_config=types.GenerateContentConfig(
-            temperature=config.temperature,
-            system_instruction=config.system_prompt or None,
-        ),
-    )
+        return model.replace(".", "-")
+    return model
 
 
-def _build_openai(config: LLMConfig) -> OpenAILLM:
-    return OpenAILLM(
-        model=config.model,
-        system_prompt=config.system_prompt or None,
-        max_tokens=config.max_tokens,
-        temperature=config.temperature,
-    )
+def build_llm(config: LLMConfig) -> Model:
+    """
+    Build a Pydantic AI model. Resolves the provider eagerly so a missing API
+    key fails here — before a run starts — instead of mid-stream.
+    """
+    prefix = _PROVIDER_PREFIX.get(config.provider)
+    if prefix is None:
+        raise LLMUnavailableError(f"Unbekannter LLM-Anbieter: {config.provider}")
 
-
-def _build_anthropic(config: LLMConfig) -> Anthropic:
-    return Anthropic(
-        model=config.model,
-        system_prompt=config.system_prompt or None,
-        max_tokens=config.max_tokens,
-        temperature=config.temperature,
-    )
+    model = normalize_model_name(config.provider, config.model)
+    try:
+        return infer_model(f"{prefix}:{model}")
+    except UserError as e:
+        logger.error("Cannot build model %s:%s: %s", prefix, model, e)
+        raise LLMUnavailableError(
+            f"Modell '{model}' ist derzeit nicht verfügbar (Anbieter nicht konfiguriert)."
+        ) from e

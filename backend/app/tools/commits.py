@@ -7,15 +7,14 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from pydantic import BaseModel, Field
-from llama_index.core.tools import FunctionTool
 
-from app.tools.registry import register_tool
+from app.tools.registry import GitHubTool, register_tool
 from app.services.github_service import GitHubService
 from app.utils import to_tool_output
 
 
 @register_tool("get_commits")
-def create_get_commits_tool(github_service: GitHubService, **kwargs) -> FunctionTool:
+def create_get_commits_tool(github_service: GitHubService, **kwargs) -> GitHubTool:
 
     class GetCommitsSchema(BaseModel):
         since: Optional[str] = Field(
@@ -59,7 +58,7 @@ def create_get_commits_tool(github_service: GitHubService, **kwargs) -> Function
 
         return to_tool_output(commits)
 
-    return FunctionTool.from_defaults(
+    return GitHubTool(
         fn=get_commits,
         name="get_commits",
         description=(
@@ -67,5 +66,5 @@ def create_get_commits_tool(github_service: GitHubService, **kwargs) -> Function
             "Nutze dieses Tool, um zu sehen, was in einem bestimmten Zeitraum, "
             "von einem bestimmten Autor oder auf einem bestimmten Branch gemacht wurde."
         ),
-        fn_schema=GetCommitsSchema,
+        schema=GetCommitsSchema,
     )

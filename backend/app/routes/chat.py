@@ -17,12 +17,13 @@ from typing import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request
 from fastapi.responses import StreamingResponse
+from github import GithubException
 
 from app.auth import get_activated_user, is_admin
 from app.config import get_settings, Settings
 from app.models.api import ChatRequest
 from app.redis_client import get_redis
-from app.services.llm_factory import LLMConfig, infer_provider
+from app.services.llm_factory import LLMConfig, LLMUnavailableError, infer_provider
 from app.services.github_service import GitHubService
 from app.services.agent_runner import AgentRunner
 from app.services.token_resolver import resolve_github_token
@@ -99,7 +100,7 @@ async def chat(
         or settings.default_llm_model
     )
     provider = infer_provider(model)
-    llm_config = LLMConfig(provider=provider, model=model, temperature=1)
+    llm_config = LLMConfig(provider=provider, model=model)
 
     # Access gate: suspension + per-user model allow-list are always enforced;
     # the monthly budget is only hard-blocked when enforcement is switched on.
@@ -122,8 +123,22 @@ async def chat(
         )
 
     token = await resolve_github_token(user)
-    github_service = GitHubService(token=token, repo_full_name=repo)
-    agent_runner = AgentRunner(llm_config=llm_config, github_service=github_service)
+    try:
+        github_service = GitHubService(token=token, repo_full_name=repo)
+    except GithubException as e:
+        # 404 usually means the repo was renamed/transferred or access was revoked.
+        logger.warning("Repo %s not accessible: %s", repo, e.status)
+        raise HTTPException(
+            status_code=404 if e.status == 404 else 502,
+            detail=f"Repository '{repo}' ist nicht erreichbar – wurde es umbenannt, "
+                   "verschoben oder der Zugriff entzogen?",
+        )
+
+    try:
+        agent_runner = AgentRunner(llm_config=llm_config, github_service=github_service)
+    except LLMUnavailableError as e:
+        logger.error("LLM unavailable for chat: %s", e)
+        raise HTTPException(status_code=503, detail=str(e))
 
     # If the client didn't provide a chat_id, or did but the chat doesn't
     # exist, create it now — honoring a client-minted id when present so the

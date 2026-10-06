@@ -6,15 +6,14 @@ Tool: get_workflow_runs – CI/CD status from GitHub Actions.
 from typing import Optional
 
 from pydantic import BaseModel, Field
-from llama_index.core.tools import FunctionTool
 
-from app.tools.registry import register_tool
+from app.tools.registry import GitHubTool, register_tool
 from app.services.github_service import GitHubService
 from app.utils import to_tool_output
 
 
 @register_tool("get_workflow_runs")
-def create_workflow_runs_tool(github_service: GitHubService, **kwargs) -> FunctionTool:
+def create_workflow_runs_tool(github_service: GitHubService, **kwargs) -> GitHubTool:
 
     class WorkflowRunsSchema(BaseModel):
         status: Optional[str] = Field(
@@ -33,12 +32,12 @@ def create_workflow_runs_tool(github_service: GitHubService, **kwargs) -> Functi
             return "Keine Workflow-Runs gefunden."
         return to_tool_output(runs)
 
-    return FunctionTool.from_defaults(
+    return GitHubTool(
         fn=get_workflow_runs,
         name="get_workflow_runs",
         description=(
             "Listet GitHub Actions Workflow-Runs auf (CI/CD-Pipelines). "
             "Nutze dieses Tool, um den CI-Status zu prüfen – ob Builds laufen, bestanden oder fehlgeschlagen sind."
         ),
-        fn_schema=WorkflowRunsSchema,
+        schema=WorkflowRunsSchema,
     )

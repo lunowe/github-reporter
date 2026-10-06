@@ -149,7 +149,7 @@ export function useChatStreamManager() {
       const txt = await resp.text().catch(() => "");
       setState(chatId, {
         phase: "error",
-        error: `HTTP ${resp.status}${txt ? `: ${txt}` : ""}`,
+        error: `HTTP ${resp.status}${txt ? `: ${errorDetail(txt)}` : ""}`,
       });
       controllers.delete(chatId);
       return null;
@@ -491,4 +491,16 @@ function getControllerRegistry(): Map<string, Controller> {
 
 function emptyState(): StreamState {
   return { runId: null, phase: "idle", reconnectAttempt: 0, error: null };
+}
+
+/** Pull FastAPI's `detail` (string or `{message}`) out of an error body. */
+function errorDetail(body: string): string {
+  try {
+    const detail = JSON.parse(body)?.detail;
+    if (typeof detail === "string") return detail;
+    if (typeof detail?.message === "string") return detail.message;
+  } catch {
+    // not JSON — show as-is
+  }
+  return body;
 }

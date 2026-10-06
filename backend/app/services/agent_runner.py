@@ -5,6 +5,9 @@ Single-agent runner that yields typed (event_type, data) tuples.
 Formatting for the wire (SSE) happens at the HTTP boundary; the runner itself
 stays transport-agnostic so stream_manager can shove these events through Redis
 without re-parsing.
+
+Provider/tool errors propagate out of `run_streaming` / `run_once` — the caller
+decides how to surface them (stream_manager marks the run as `error`).
 """
 
 from __future__ import annotations
@@ -14,58 +17,35 @@ import logging
 from datetime import date
 from typing import AsyncGenerator, Optional
 
-from llama_index.core.agent.workflow import (
-    FunctionAgent,
-    AgentStream,
-    AgentOutput,
-    ToolCall,
-    ToolCallResult,
+from pydantic_ai import Agent, Tool
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPart,
+    TextPartDelta,
+    UserPromptPart,
 )
-from llama_index.core.llms import ChatMessage
-from llama_index.core.memory import Memory
-from llama_index.core.callbacks import CallbackManager, TokenCountingHandler
+from pydantic_ai.settings import ModelSettings
+from pydantic_ai.usage import RunUsage
 
 from app.services.llm_factory import LLMConfig, build_llm
 from app.services.github_service import GitHubService
-from app.tools.registry import build_all_tools
+from app.tools.registry import GitHubTool, build_all_tools
 from app.utils import trunc, safe_serialize_kwargs
 
 logger = logging.getLogger(__name__)
 
-# Provider usage payloads use different key names; normalize across all three.
-_INPUT_TOKEN_KEYS = ("prompt_tokens", "input_tokens", "prompt_token_count")
-_OUTPUT_TOKEN_KEYS = ("completion_tokens", "output_tokens", "candidates_token_count")
-_CACHED_TOKEN_KEYS = ("cache_read_input_tokens", "cached_content_token_count", "cached_tokens")
+# Anthropic requires an explicit output cap; the SDK default is too low for
+# multi-section status reports.
+_ANTHROPIC_MAX_TOKENS = 16_000
 
-
-def _coerce_usage_dict(raw, additional_kwargs) -> dict:
-    """Pull the usage mapping out of a raw provider response (or kwargs)."""
-    usage = None
-    if isinstance(raw, dict):
-        usage = raw.get("usage") or raw.get("usage_metadata")
-    elif raw is not None:
-        usage = getattr(raw, "usage", None) or getattr(raw, "usage_metadata", None)
-    if usage is None:
-        usage = additional_kwargs or {}
-    if usage and not isinstance(usage, dict):
-        try:
-            usage = usage.model_dump()
-        except Exception:
-            try:
-                usage = dict(usage)
-            except Exception:
-                usage = {}
-    return usage or {}
-
-
-def _pick(usage: dict, keys: tuple[str, ...]) -> int:
-    for k in keys:
-        if k in usage and usage[k] is not None:
-            try:
-                return int(usage[k])
-            except (TypeError, ValueError):
-                return 0
-    return 0
+# How often the model may resend a tool call with invalid arguments.
+_TOOL_MAX_RETRIES = 3
 
 
 SYSTEM_PROMPT_TEMPLATE = """\
@@ -103,8 +83,50 @@ Du arbeitest mit dem Repository **{repo}**.
 """
 
 
+def _to_agent_tool(tool: GitHubTool) -> Tool:
+    """
+    Adapt a GitHubTool to Pydantic AI. The single parameter is annotated with
+    the tool's schema, so Pydantic AI exposes the schema's fields directly and
+    validates arguments itself (invalid args → the model is asked to retry).
+    GitHub/API failures are returned to the model as text so it can adapt
+    instead of aborting the whole run. Sync PyGithub calls run in a worker thread.
+    """
+    def call(args) -> str:
+        try:
+            return tool.fn(**args.model_dump())
+        except Exception as e:  # noqa: BLE001 — surface to the model, not the user
+            logger.warning("Tool %s failed: %s", tool.name, e)
+            return f"Fehler beim Abrufen der GitHub-Daten: {e}"
+
+    # Set at runtime: the schema class is only known per tool.
+    call.__annotations__ = {"args": tool.schema, "return": str}
+
+    return Tool(
+        call,
+        name=tool.name,
+        description=tool.description,
+        max_retries=_TOOL_MAX_RETRIES,
+        # PyGithub isn't built for concurrent use; keep calls one at a time.
+        sequential=True,
+    )
+
+
+def _to_message_history(chat_history: list[dict] | None) -> list[ModelMessage]:
+    messages: list[ModelMessage] = []
+    for msg in chat_history or []:
+        content = msg.get("content") or ""
+        if not content:
+            continue
+        role = msg.get("role", "user")
+        if role == "user":
+            messages.append(ModelRequest(parts=[UserPromptPart(content=content)]))
+        elif role == "assistant":
+            messages.append(ModelResponse(parts=[TextPart(content=content)]))
+    return messages
+
+
 class AgentRunner:
-    """Builds and runs a single FunctionAgent with GitHub tools."""
+    """Builds and runs a single Pydantic AI agent with GitHub tools."""
 
     def __init__(
         self,
@@ -112,76 +134,39 @@ class AgentRunner:
         github_service: GitHubService,
     ):
         self.github_service = github_service
-        self.tools = build_all_tools(github_service)
         self.provider = llm_config.provider
         self.model = llm_config.model
 
-        self.system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
+        system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
             today=date.today().isoformat(),
             repo=github_service.repo_full_name,
         )
-        llm_config.system_prompt = self.system_prompt
-        self.llm = build_llm(llm_config)
 
-        # Per-instance token accounting. A fresh CallbackManager is attached to
-        # *this* LLM only — never the global Settings — so concurrent runs can't
-        # cross-contaminate. The handler accumulates real provider token counts
-        # (tiktoken estimate fallback) across every tool-calling turn in a run.
-        self._token_counter = TokenCountingHandler()
-        self.llm.callback_manager = CallbackManager([self._token_counter])
+        # Accumulates real provider token counts across every tool-calling turn
+        # of a run — including runs that end in an error or a cancel.
+        self._usage = RunUsage()
 
-        # Fallback accumulators, summed off AgentOutput.raw during the stream in
-        # case the callback doesn't fire for a given provider/version.
-        self._fallback_prompt = 0
-        self._fallback_completion = 0
-        self._cached_tokens = 0
-
-        self.agent = FunctionAgent(
-            llm=self.llm,
-            tools=self.tools,
-            system_prompt=self.system_prompt,
-            allow_parallel_tool_calls=False,
+        self.agent = Agent(
+            build_llm(llm_config),
+            instructions=system_prompt,
+            tools=[_to_agent_tool(t) for t in build_all_tools(github_service)],
+            model_settings=(
+                ModelSettings(max_tokens=_ANTHROPIC_MAX_TOKENS)
+                if self.provider == "anthropic" else None
+            ),
         )
 
-    def _reset_usage(self) -> None:
-        self._token_counter.reset_counts()
-        self._fallback_prompt = 0
-        self._fallback_completion = 0
-        self._cached_tokens = 0
-
-    def _accumulate_from_output(self, event: AgentOutput) -> None:
-        """Best-effort: sum usage from one AgentOutput's raw provider response."""
-        try:
-            additional = {}
-            if event.response is not None:
-                additional = getattr(event.response, "additional_kwargs", {}) or {}
-            usage = _coerce_usage_dict(event.raw, additional)
-            if not usage:
-                return
-            self._fallback_prompt += _pick(usage, _INPUT_TOKEN_KEYS)
-            self._fallback_completion += _pick(usage, _OUTPUT_TOKEN_KEYS)
-            self._cached_tokens += _pick(usage, _CACHED_TOKEN_KEYS)
-        except Exception:
-            logger.debug("Usage extraction from AgentOutput failed", exc_info=True)
-
     def usage(self) -> dict:
-        """
-        Token usage for the most recent run. Prefers the callback handler's
-        cumulative counts; falls back to the per-output sum if the handler saw
-        nothing (e.g. provider didn't surface usage through the callback).
-        """
-        prompt = int(self._token_counter.prompt_llm_token_count or 0)
-        completion = int(self._token_counter.completion_llm_token_count or 0)
-        if prompt + completion == 0:
-            prompt = self._fallback_prompt
-            completion = self._fallback_completion
+        """Token usage for the most recent run."""
+        prompt = self._usage.input_tokens or 0
+        completion = self._usage.output_tokens or 0
         return {
             "provider": self.provider,
             "model": self.model,
             "prompt_tokens": prompt,
             "completion_tokens": completion,
             "total_tokens": prompt + completion,
-            "cached_tokens": self._cached_tokens,
+            "cached_tokens": self._usage.cache_read_tokens or 0,
         }
 
     async def run_streaming(
@@ -195,75 +180,48 @@ class AgentRunner:
 
         Event types: "status", "token", "tool_call", "tool_result".
 
-        If `cancel_event` is set mid-stream we break out of the loop and ask the
-        workflow handler to cancel so no more tool calls fire.
+        If `cancel_event` is set mid-stream we break out of the loop; leaving
+        the `run_stream_events` context cancels the run so no more tool calls fire.
         """
         logger.info("Agent run: query=%r", query)
-        self._reset_usage()
+        self._usage = RunUsage()
 
         yield "status", {"status": "started"}
 
-        llama_messages: list[ChatMessage] = []
-        if chat_history:
-            for msg in chat_history:
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                if role == "user":
-                    llama_messages.append(ChatMessage(role="user", content=content))
-                elif role == "assistant":
-                    llama_messages.append(ChatMessage(role="assistant", content=content))
-
-        memory = Memory.from_defaults(
-            token_limit=200000,
-            chat_history=llama_messages,
-        )
-
-        handler = self.agent.run(user_msg=query, memory=memory)
-
-        try:
-            async for event in handler.stream_events():
+        async with self.agent.run_stream_events(
+            query,
+            message_history=_to_message_history(chat_history),
+            usage=self._usage,
+        ) as events:
+            async for event in events:
                 if cancel_event is not None and cancel_event.is_set():
                     break
 
-                if isinstance(event, AgentStream):
-                    delta = event.delta or ""
-                    if delta:
-                        yield "token", {"content": delta}
+                if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
+                    if event.part.content:
+                        yield "token", {"content": event.part.content}
 
-                elif isinstance(event, AgentOutput):
-                    self._accumulate_from_output(event)
-                    if event.tool_calls:
-                        logger.info("Tool calls pending: %d", len(event.tool_calls))
+                elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
+                    if event.delta.content_delta:
+                        yield "token", {"content": event.delta.content_delta}
 
-                elif isinstance(event, ToolCall):
-                    logger.info("ToolCall: %s", event.tool_name)
+                elif isinstance(event, FunctionToolCallEvent):
+                    logger.info("ToolCall: %s", event.part.tool_name)
                     yield "tool_call", {
-                        "name": event.tool_name,
-                        "id": event.tool_id,
-                        "input": safe_serialize_kwargs(event.tool_kwargs),
+                        "name": event.part.tool_name,
+                        "id": event.tool_call_id,
+                        "input": safe_serialize_kwargs(event.part.args_as_dict()),
                     }
 
-                elif isinstance(event, ToolCallResult):
-                    output_str = str(event.tool_output.content) if event.tool_output else ""
-                    logger.info("ToolCallResult: %s -> %d chars", event.tool_name, len(output_str))
+                elif isinstance(event, FunctionToolResultEvent):
+                    content = event.part.content
+                    output_str = content if isinstance(content, str) else str(content)
+                    logger.info("ToolCallResult: %s -> %d chars", event.part.tool_name, len(output_str))
                     yield "tool_result", {
-                        "name": event.tool_name,
-                        "id": event.tool_id,
+                        "name": event.part.tool_name,
+                        "id": event.tool_call_id,
                         "output": trunc(output_str, 2000),
                     }
-        finally:
-            # If we're bailing early (cancel or exception), try to stop the handler
-            # so no more tool calls fire. LlamaIndex's WorkflowHandler supports
-            # cancellation; best-effort, since different versions expose different APIs.
-            try:
-                if hasattr(handler, "cancel_run"):
-                    cancel_result = handler.cancel_run()
-                    if asyncio.iscoroutine(cancel_result):
-                        await cancel_result
-                elif hasattr(handler, "cancel"):
-                    handler.cancel()
-            except Exception:
-                logger.debug("Workflow handler cancel failed", exc_info=True)
 
     async def run_once(
         self,
@@ -276,39 +234,11 @@ class AgentRunner:
         Raises on failure so the caller can log/store the error.
         """
         logger.info("Agent run_once: query=%r", query)
-        self._reset_usage()
+        self._usage = RunUsage()
 
-        llama_messages: list[ChatMessage] = []
-        if chat_history:
-            for msg in chat_history:
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                if role in ("user", "assistant"):
-                    llama_messages.append(ChatMessage(role=role, content=content))
-
-        memory = Memory.from_defaults(
-            token_limit=200000,
-            chat_history=llama_messages,
+        result = await self.agent.run(
+            query,
+            message_history=_to_message_history(chat_history),
+            usage=self._usage,
         )
-
-        final_response = ""
-
-        handler = self.agent.run(user_msg=query, memory=memory)
-        async for event in handler.stream_events():
-            if isinstance(event, AgentStream):
-                delta = event.delta or ""
-                if delta:
-                    final_response += delta
-            elif isinstance(event, AgentOutput):
-                self._accumulate_from_output(event)
-            elif isinstance(event, ToolCall):
-                logger.info("ToolCall: %s", event.tool_name)
-            elif isinstance(event, ToolCallResult):
-                output_str = str(event.tool_output.content) if event.tool_output else ""
-                logger.info(
-                    "ToolCallResult: %s -> %d chars",
-                    event.tool_name,
-                    len(output_str),
-                )
-
-        return final_response
+        return result.output

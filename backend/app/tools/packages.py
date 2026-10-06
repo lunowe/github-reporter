@@ -16,9 +16,8 @@ needs access to the publishing repo.
 from typing import Optional
 
 from pydantic import BaseModel, Field
-from llama_index.core.tools import FunctionTool
 
-from app.tools.registry import register_tool
+from app.tools.registry import GitHubTool, register_tool
 from app.services.github_service import GitHubService
 from app.utils import to_tool_output
 
@@ -28,7 +27,7 @@ from app.utils import to_tool_output
 @register_tool("list_container_packages")
 def create_list_container_packages_tool(
     github_service: GitHubService, **kwargs,
-) -> FunctionTool:
+) -> GitHubTool:
 
     class ListPackagesSchema(BaseModel):
         only_this_repo: bool = Field(
@@ -51,7 +50,7 @@ def create_list_container_packages_tool(
             )
         return to_tool_output(pkgs)
 
-    return FunctionTool.from_defaults(
+    return GitHubTool(
         fn=list_container_packages,
         name="list_container_packages",
         description=(
@@ -61,7 +60,7 @@ def create_list_container_packages_tool(
             "der Versionen, verknüpftes Repo und ghcr.io-Referenz. "
             "Einstiegs-Tool, um zu sehen, welche Images überhaupt existieren."
         ),
-        fn_schema=ListPackagesSchema,
+        schema=ListPackagesSchema,
     )
 
 
@@ -70,7 +69,7 @@ def create_list_container_packages_tool(
 @register_tool("get_container_image_tags")
 def create_get_container_image_tags_tool(
     github_service: GitHubService, **kwargs,
-) -> FunctionTool:
+) -> GitHubTool:
 
     class ImageTagsSchema(BaseModel):
         package_name: str = Field(
@@ -93,7 +92,7 @@ def create_get_container_image_tags_tool(
             )
         return to_tool_output(versions)
 
-    return FunctionTool.from_defaults(
+    return GitHubTool(
         fn=get_container_image_tags,
         name="get_container_image_tags",
         description=(
@@ -103,7 +102,7 @@ def create_get_container_image_tags_tool(
             "Tool, um zu sehen, welche Tags verfügbar sind, welcher Tag am "
             "aktuellsten ist und ob untaggte Altversionen existieren."
         ),
-        fn_schema=ImageTagsSchema,
+        schema=ImageTagsSchema,
     )
 
 
@@ -112,7 +111,7 @@ def create_get_container_image_tags_tool(
 @register_tool("get_container_image_details")
 def create_get_container_image_details_tool(
     github_service: GitHubService, **kwargs,
-) -> FunctionTool:
+) -> GitHubTool:
 
     class ImageDetailsSchema(BaseModel):
         package_name: str = Field(
@@ -133,7 +132,7 @@ def create_get_container_image_details_tool(
         details = github_service.get_container_image_details(package_name, tag=tag)
         return to_tool_output(details)
 
-    return FunctionTool.from_defaults(
+    return GitHubTool(
         fn=get_container_image_details,
         name="get_container_image_details",
         description=(
@@ -144,7 +143,7 @@ def create_get_container_image_details_tool(
             "Nutze dieses Tool, wenn der User nach Details zu einem bestimmten "
             "Image oder Tag fragt (z.B. 'wann wurde :latest gepusht?')."
         ),
-        fn_schema=ImageDetailsSchema,
+        schema=ImageDetailsSchema,
     )
 
 
@@ -153,7 +152,7 @@ def create_get_container_image_details_tool(
 @register_tool("find_image_for_commit")
 def create_find_image_for_commit_tool(
     github_service: GitHubService, **kwargs,
-) -> FunctionTool:
+) -> GitHubTool:
 
     class FindImageSchema(BaseModel):
         commit_sha: str = Field(
@@ -176,7 +175,7 @@ def create_find_image_for_commit_tool(
         )
         return to_tool_output(result)
 
-    return FunctionTool.from_defaults(
+    return GitHubTool(
         fn=find_image_for_commit,
         name="find_image_for_commit",
         description=(
@@ -188,5 +187,5 @@ def create_find_image_for_commit_tool(
             "wenn der User wissen will, ob bzw. als welches Image ein Commit "
             "oder PR publiziert wurde."
         ),
-        fn_schema=FindImageSchema,
+        schema=FindImageSchema,
     )

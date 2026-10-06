@@ -30,7 +30,7 @@ export const MODEL_GROUPS: ModelGroup[] = [
   {
     provider: "Anthropic",
     models: [
-      { value: "claude-sonnet-4.6", label: "Claude Sonnet 4.6" },
+      { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
     ],
   },
 ];

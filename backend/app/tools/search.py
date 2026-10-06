@@ -6,15 +6,14 @@ Tool: search_code – search for code patterns across the repository.
 from typing import Optional
 
 from pydantic import BaseModel, Field
-from llama_index.core.tools import FunctionTool
 
-from app.tools.registry import register_tool
+from app.tools.registry import GitHubTool, register_tool
 from app.services.github_service import GitHubService
 from app.utils import to_tool_output
 
 
 @register_tool("search_code")
-def create_search_code_tool(github_service: GitHubService, **kwargs) -> FunctionTool:
+def create_search_code_tool(github_service: GitHubService, **kwargs) -> GitHubTool:
 
     class SearchCodeSchema(BaseModel):
         query: str = Field(
@@ -61,7 +60,7 @@ def create_search_code_tool(github_service: GitHubService, **kwargs) -> Function
 
         return to_tool_output(results)
 
-    return FunctionTool.from_defaults(
+    return GitHubTool(
         fn=search_code,
         name="search_code",
         description=(
@@ -71,5 +70,5 @@ def create_search_code_tool(github_service: GitHubService, **kwargs) -> Function
             "Import oder ein Muster im Code verwendet wird. "
             "Kann mit path und extension eingegrenzt werden."
         ),
-        fn_schema=SearchCodeSchema,
+        schema=SearchCodeSchema,
     )
